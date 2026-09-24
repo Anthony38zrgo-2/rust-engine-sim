@@ -1,0 +1,25 @@
+{
+  "filter": "causal Butterworth high-pass",
+  "order": 4,
+  "cutoff_hz": 150,
+  "processed_files": [
+    {
+      "source": "assets\\sound-library\\smooth\\smooth_01.wav",
+      "source_sha256": "ba87e1783519860c1d41555d45542f332bcbf395afc2035ceab8caa0043e3b71",
+      "output": "assets\\sound-library\\rs24\\smooth_01_hp150.wav",
+      "source_peak": 32768,
+      "filtered_peak_before_scale": 12328.82156289688,
+      "scale": 1.0,
+      "output_peak": 12329
+    },
+    {
+      "source": "assets\\sound-library\\smooth\\smooth_02.wav",
+      "source_sha256": "c7e0b765493a4482b8df345838912dfdc1579c4cc031439bd87ab4ba7a199f32",
+      "output": "assets\\sound-library\\rs24\\smooth_02_hp150.wav",
+      "source_peak": 32768,
+      "filtered_peak_before_scale": 55557.74449592167,
+      "scale": 0.5897827620126899,
+      "output_peak": 32767
+    }
+  ]
+}

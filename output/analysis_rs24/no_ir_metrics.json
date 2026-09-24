@@ -1,0 +1,24 @@
+{
+  "rs24_v10_sweep_bass_tamed.wav": {
+    "rms_i16": 7498.631729689469,
+    "peak_i16": 30000,
+    "pcm_clip_count": 0,
+    "exact_peak_percent": 1.011111111111111,
+    "under_200hz_3to4s_percent": 6.847675537420337,
+    "dominant_hz_3to4s": 355.2978515625
+  },
+  "rs24_v10_sweep_no_ir.wav": {
+    "rms_i16": 7498.529005742943,
+    "peak_i16": 30303,
+    "pcm_clip_count": 0,
+    "exact_peak_percent": 1.0859410430839,
+    "under_200hz_3to4s_percent": 3.971066758784915,
+    "dominant_hz_3to4s": 366.064453125
+  },
+  "rms_difference_db": -0.00011898903778687637,
+  "no_ir_references": [
+    null,
+    null
+  ],
+  "no_ir_convolution": 0.0
+}

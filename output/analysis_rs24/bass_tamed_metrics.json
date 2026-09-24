@@ -1,0 +1,30 @@
+{
+  "rs24_v10_sweep_revised.wav": {
+    "sample_rate": 44100,
+    "duration_s": 10.0,
+    "rms_normalized": 0.23011712571199514,
+    "peak_i16": 23850,
+    "pcm_clipped_samples": 0,
+    "bass_under_200_3to4s_percent": 55.975491745560646,
+    "subbass_under_100_3to4s_percent": 49.07369632544522
+  },
+  "rs24_v10_sweep_bass_tamed.wav": {
+    "sample_rate": 44100,
+    "duration_s": 10.0,
+    "rms_normalized": 0.22884007964140224,
+    "peak_i16": 30000,
+    "pcm_clipped_samples": 0,
+    "bass_under_200_3to4s_percent": 6.847675537420337,
+    "subbass_under_100_3to4s_percent": 1.5141842787404654
+  },
+  "rms_difference_db": -0.04833701150848537,
+  "source_irs_unchanged": true,
+  "configuration": {
+    "convolution": 0.5,
+    "volume": 1.2,
+    "impulse_responses": [
+      "sound-library/rs24/smooth_01_hp150.wav",
+      "sound-library/rs24/smooth_02_hp150.wav"
+    ]
+  }
+}
