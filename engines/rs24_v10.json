@@ -1,0 +1,189 @@
+{
+  "name": "Renault RS24 V10 72",
+  "meta": {
+    "starter_torque_ft_lb": 90,
+    "starter_speed_rpm": 200,
+    "redline_rpm": 19000,
+    "dyno_min_rpm": 1000,
+    "dyno_max_rpm": 19000,
+    "dyno_hold_rpm": 100,
+    "simulation_frequency": 8000,
+    "fluid_simulation_steps": 4
+  },
+  "crank": {
+    "mass_kg": 18,
+    "flywheel_mass_kg": 8,
+    "moment_of_inertia_kg_m2": 0.052,
+    "stroke_mm": 41.419,
+    "tdc_deg": 126,
+    "friction_torque_nm": 8,
+    "rod_journals": 5,
+    "journal_angles_deg": [0, 144, 216, 288, 72]
+  },
+  "banks": [
+    {
+      "angle_deg": 36,
+      "bore_mm": 96.0,
+      "exhaust_system": 1,
+      "primary_length_mm": 40,
+      "sound_attenuation": 0.9
+    },
+    {
+      "angle_deg": -36,
+      "bore_mm": 96.0,
+      "exhaust_system": 0,
+      "primary_length_mm": 45,
+      "sound_attenuation": 1.0
+    }
+  ],
+  "cylinders": [
+    { "bank": 0, "bank_cylinder": 0, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 0 },
+    { "bank": 0, "bank_cylinder": 1, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 1 },
+    { "bank": 0, "bank_cylinder": 2, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 2 },
+    { "bank": 0, "bank_cylinder": 3, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 3 },
+    { "bank": 0, "bank_cylinder": 4, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 4 },
+    { "bank": 1, "bank_cylinder": 0, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 0 },
+    { "bank": 1, "bank_cylinder": 1, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 1 },
+    { "bank": 1, "bank_cylinder": 2, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 2 },
+    { "bank": 1, "bank_cylinder": 3, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 3 },
+    { "bank": 1, "bank_cylinder": 4, "rod_length_mm": 90, "piston_mass_g": 250, "compression_height_mm": 18, "journal": 4 }
+  ],
+  "intake": {
+    "plenum_volume_cc": 1325,
+    "cross_section_area_cm2": 20,
+    "input_flow_k": 0.044591,
+    "runner_flow_k": 0.00637,
+    "molecular_afr": 12.5,
+    "idle_throttle_plate_position": 0.99,
+    "runner_length_mm": 80,
+    "velocity_decay": 0.5
+  },
+  "exhausts": [
+    {
+      "length_mm": 1200,
+      "collector_cross_section_cm2": 60,
+      "outlet_flow_k": 0.0637,
+      "primary_tube_length_mm": 508,
+      "primary_flow_k": 0.03185,
+      "velocity_decay": 1.0,
+      "audio_volume": 2.0,
+      "impulse_response": "sound-library/smooth/smooth_01.wav",
+      "impulse_response_volume": 0.001
+    },
+    {
+      "length_mm": 1422,
+      "collector_cross_section_cm2": 60,
+      "outlet_flow_k": 0.0637,
+      "primary_tube_length_mm": 508,
+      "primary_flow_k": 0.03185,
+      "velocity_decay": 1.0,
+      "audio_volume": 2.0,
+      "impulse_response": "sound-library/smooth/smooth_02.wav",
+      "impulse_response_volume": 0.001
+    }
+  ],
+  "heads": [
+    {
+      "bank": 0,
+      "combustion_chamber_volume_cc": 24.0,
+      "intake_runner_volume_cc": 120,
+      "intake_runner_cross_section_cm2": 8,
+      "exhaust_runner_volume_cc": 60,
+      "exhaust_runner_cross_section_cm2": 7,
+      "cylinder_count": 5,
+      "intake_flow": [[0, 0], [50, 58], [100, 103], [150, 156], [200, 214], [250, 249], [300, 268], [350, 280], [400, 280], [450, 281]],
+      "exhaust_flow": [[0, 0], [50, 37], [100, 72], [150, 113], [200, 160], [250, 196], [300, 222], [350, 235], [400, 245], [450, 246]],
+      "cylinder_exhaust": [null, null, null, null, null],
+      "cylinder_primary_mm": [],
+      "cylinder_attenuation": []
+    },
+    {
+      "bank": 1,
+      "combustion_chamber_volume_cc": 24.0,
+      "intake_runner_volume_cc": 120,
+      "intake_runner_cross_section_cm2": 8,
+      "exhaust_runner_volume_cc": 60,
+      "exhaust_runner_cross_section_cm2": 7,
+      "cylinder_count": 5,
+      "intake_flow": [[0, 0], [50, 58], [100, 103], [150, 156], [200, 214], [250, 249], [300, 268], [350, 280], [400, 280], [450, 281]],
+      "exhaust_flow": [[0, 0], [50, 37], [100, 72], [150, 113], [200, 160], [250, 196], [300, 222], [350, 235], [400, 245], [450, 246]],
+      "cylinder_exhaust": [null, null, null, null, null],
+      "cylinder_primary_mm": [],
+      "cylinder_attenuation": []
+    }
+  ],
+  "ignition": {
+    "firing_order": [
+      [0, 0],
+      [5, 72],
+      [1, 144],
+      [6, 216],
+      [3, 288],
+      [8, 360],
+      [4, 432],
+      [9, 504],
+      [2, 576],
+      [7, 648]
+    ],
+    "timing_curve_rpm_deg": [
+      [0, 10],
+      [5000, 18],
+      [10000, 28],
+      [15000, 35],
+      [19000, 38]
+    ],
+    "rev_limit_rpm": 19100,
+    "limiter_duration_s": 0.04
+  },
+  "cams": {
+    "intake_duration_deg": 270,
+    "exhaust_duration_deg": 275,
+    "intake_lift_mm": 10.5,
+    "exhaust_lift_mm": 10.0,
+    "gamma": 2.0,
+    "base_radius_mm": 12,
+    "intake_advance_deg": 0,
+    "exhaust_advance_deg": 0,
+    "intake_centerline_deg": 450,
+    "exhaust_centerline_deg": 270
+  },
+  "fuel": {
+    "name": "Gasoline [Race F1]",
+    "max_burning_efficiency": 1.0,
+    "burning_efficiency_randomness": 1.0,
+    "max_turbulence_effect": 10.0,
+    "max_dilution_effect": 5.0,
+    "turbulence_to_flame_speed_ratio": [
+      [0, 6], [5, 15], [10, 37.5], [15, 67.5], [20, 90],
+      [25, 112.5], [30, 135], [35, 157.5], [40, 180], [45, 202.5]
+    ]
+  },
+  "fluids": {
+    "starting_pressure_pa": 101325,
+    "starting_temperature_c": 25,
+    "crankcase_pressure_pa": 101325
+  },
+  "scenario": {
+    "duration_s": 3.0,
+    "events": [
+      { "time_s": 0.0, "action": "starter", "value": 1 },
+      { "time_s": 0.0, "action": "ignition", "value": 1 },
+      { "time_s": 0.0, "action": "throttle", "value": 0.15 },
+      { "time_s": 0.5, "action": "starter", "value": 0 },
+      { "time_s": 0.6, "action": "throttle", "value": 1.0 },
+      { "time_s": 2.4, "action": "throttle", "value": 0.0 },
+      { "time_s": 2.9, "action": "throttle", "value": 0.0 }
+    ]
+  },
+  "audio": {
+    "sample_rate": 44100,
+    "output": "rs24_v10.wav",
+    "volume": 1.0,
+    "convolution": 0.6,
+    "d_f_f_mix": 0.01,
+    "input_sample_noise": 0.4,
+    "air_noise": 0.8,
+    "air_noise_frequency_cutoff": 3500,
+    "input_sample_noise_frequency_cutoff": 10000
+  }
+}

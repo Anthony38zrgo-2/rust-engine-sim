@@ -1,0 +1,10 @@
+[package]
+name = "es-intake-exhaust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intake plenum and exhaust collector"
+
+[dependencies]
+es-units = { path = "../es-units" }
+es-gas = { path = "../es-gas" }

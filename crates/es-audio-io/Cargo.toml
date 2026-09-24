@@ -1,0 +1,9 @@
+[package]
+name = "es-audio-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WAV file I/O for engine audio output"
+
+[dependencies]
+hound = "3.5"

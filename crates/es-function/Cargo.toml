@@ -1,0 +1,8 @@
+[package]
+name = "es-function"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tabulated 1D functions (cam profiles, timing/torque curves)"
+
+[dependencies]

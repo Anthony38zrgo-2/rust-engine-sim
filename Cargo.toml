@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/es-units",
+    "crates/es-function",
+    "crates/es-gas",
+    "crates/es-solver",
+    "crates/es-mechanics",
+    "crates/es-combustion",
+    "crates/es-intake-exhaust",
+    "crates/es-sim",
+    "crates/es-dsp",
+    "crates/es-audio-io",
+    "crates/es-config",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1

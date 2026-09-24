@@ -1,0 +1,9 @@
+[package]
+name = "es-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DSP filters for engine audio synthesis"
+
+[dependencies]
+es-function = { path = "../es-function" }

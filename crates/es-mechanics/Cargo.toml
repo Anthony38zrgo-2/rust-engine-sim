@@ -1,0 +1,11 @@
+[package]
+name = "es-mechanics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Crankshaft, piston, rod, bank, head, camshaft, valvetrain"
+
+[dependencies]
+es-units = { path = "../es-units" }
+es-function = { path = "../es-function" }
+es-solver = { path = "../es-solver" }

@@ -1,0 +1,23 @@
+[package]
+name = "es-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JSON engine configuration loader"
+
+[dependencies]
+es-units = { path = "../es-units" }
+es-function = { path = "../es-function" }
+es-gas = { path = "../es-gas" }
+es-mechanics = { path = "../es-mechanics" }
+es-combustion = { path = "../es-combustion" }
+es-intake-exhaust = { path = "../es-intake-exhaust" }
+es-sim = { path = "../es-sim" }
+es-dsp = { path = "../es-dsp" }
+es-audio-io = { path = "../es-audio-io" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "render"
+path = "src/bin/render.rs"

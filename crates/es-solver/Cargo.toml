@@ -1,0 +1,8 @@
+[package]
+name = "es-solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "2D rigid-body constraint solver (sequential impulses)"
+
+[dependencies]

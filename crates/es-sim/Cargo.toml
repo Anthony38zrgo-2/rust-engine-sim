@@ -1,0 +1,15 @@
+[package]
+name = "es-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine assembly and offline simulation loop"
+
+[dependencies]
+es-units = { path = "../es-units" }
+es-function = { path = "../es-function" }
+es-gas = { path = "../es-gas" }
+es-solver = { path = "../es-solver" }
+es-mechanics = { path = "../es-mechanics" }
+es-combustion = { path = "../es-combustion" }
+es-intake-exhaust = { path = "../es-intake-exhaust" }
