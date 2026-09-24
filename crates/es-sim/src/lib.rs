@@ -91,15 +91,21 @@ impl Constraint for SpeedControlConstraint {
 
         if self.dyno_mode {
             // Reference Dynamometer: bias follows the current spin direction;
-            // `hold` enables braking, `enabled` gates the driving side.
+            // `hold` gates braking, `enabled` gates the driving side.
+            // Positive impulses speed up positive rotation (and slow negative),
+            // negative impulses do the opposite.
             if b.v_theta < 0.0 {
                 self.target = -self.rotation_speed;
-                self.lo_impulse = if self.hold && self.enabled { -max_impulse } else { 0.0 };
-                self.hi_impulse = if self.enabled { max_impulse } else { 0.0 };
+                // Drive toward the (negative) target: negative impulses.
+                self.lo_impulse = if self.enabled { -max_impulse } else { 0.0 };
+                // Hold: brake back toward target with positive impulses.
+                self.hi_impulse = if self.hold && self.enabled { max_impulse } else { 0.0 };
             } else {
                 self.target = self.rotation_speed;
-                self.lo_impulse = if self.enabled { -max_impulse } else { 0.0 };
-                self.hi_impulse = if self.hold && self.enabled { max_impulse } else { 0.0 };
+                // Hold: brake back toward target with negative impulses.
+                self.lo_impulse = if self.hold && self.enabled { -max_impulse } else { 0.0 };
+                // Drive toward the (positive) target: positive impulses.
+                self.hi_impulse = if self.enabled { max_impulse } else { 0.0 };
             }
         } else {
             // Reference StarterMotor: v_bias = -rotation_speed => target = speed.
@@ -288,11 +294,6 @@ pub struct Engine {
     /// Per-cylinder exhaust pulse delay (primary + system length / speed of sound).
     exhaust_delay: Vec<DelayLine>,
     time: f64,
-    /// TEMP diagnostics
-    pub diag_peak_p: f64,
-    pub diag_min_v: f64,
-    pub diag_max_v: f64,
-    pub diag_burnt_fuel: f64,
 
     pub starter_enabled: bool,
     pub dyno_enabled: bool,
@@ -385,6 +386,12 @@ pub struct EngineBuild {
     pub bank_exhaust: Vec<(usize, f64)>,
     /// Per bank sound attenuation multiplier
     pub bank_sound_attenuation: Vec<f64>,
+    /// Per head, per cylinder exhaust system override (None = bank default).
+    pub head_cylinder_exhaust: Vec<Vec<Option<usize>>>,
+    /// Per head, per cylinder header primary length [m] (empty = bank default).
+    pub head_cylinder_primary_mm: Vec<Vec<f64>>,
+    /// Per head, per cylinder sound attenuation (empty = bank default).
+    pub head_cylinder_attenuation: Vec<Vec<f64>>,
 }
 
 impl Engine {
@@ -605,6 +612,28 @@ impl Engine {
                     head.set_sound_attenuation(c, att);
                 }
             }
+            // Per-cylinder overrides (JSON `cylinder_exhaust` etc.)
+            if let Some(overrides) = b.head_cylinder_exhaust.get(i) {
+                for (c, sys) in overrides.iter().enumerate() {
+                    if let Some(sys) = sys {
+                        head.set_exhaust_system(c, *sys);
+                    }
+                }
+            }
+            if let Some(primaries) = b.head_cylinder_primary_mm.get(i) {
+                for (c, len_m) in primaries.iter().enumerate() {
+                    if *len_m > 0.0 {
+                        head.set_header_primary_length(c, *len_m);
+                    }
+                }
+            }
+            if let Some(atts) = b.head_cylinder_attenuation.get(i) {
+                for (c, att) in atts.iter().enumerate() {
+                    if *att > 0.0 {
+                        head.set_sound_attenuation(c, *att);
+                    }
+                }
+            }
             head.set_all_intakes(0);
         }
 
@@ -631,14 +660,15 @@ impl Engine {
         let n_cyl = pistons.len();
         let mut exhaust_system_index = Vec::with_capacity(n_cyl);
         let mut exhaust_delay = Vec::with_capacity(n_cyl);
-        for i in 0..n_cyl {
-            let bank_idx = pistons[i].bank;
-            let bank_cyl = pistons[i].cylinder_index;
+        let delay_rate = meta.simulation_frequency;
+        for piston in &pistons {
+            let bank_idx = piston.bank;
+            let bank_cyl = piston.cylinder_index;
             let head = &heads[bank_idx];
             let ex_idx = head.exhaust_system(bank_cyl).unwrap_or(0);
             let length = head.header_primary_length(bank_cyl) + exhausts[ex_idx].length();
             exhaust_system_index.push(ex_idx);
-            exhaust_delay.push(DelayLine::new(length / 343.0, 10_000.0));
+            exhaust_delay.push(DelayLine::new(length / 343.0, delay_rate));
         }
 
         Self {
@@ -671,10 +701,6 @@ impl Engine {
             exhaust_system_index,
             exhaust_delay,
             time: 0.0,
-            diag_peak_p: 0.0,
-            diag_min_v: f64::MAX,
-            diag_max_v: 0.0,
-            diag_burnt_fuel: 0.0,
             starter_enabled: false,
             dyno_enabled: false,
             dyno_hold: false,
@@ -686,7 +712,7 @@ impl Engine {
         units::to_rpm(self.system.bodies.bodies[self.crank_body].v_theta).abs()
     }
 
-pub fn omega(&self) -> f64 {
+    pub fn omega(&self) -> f64 {
         self.crankshafts[0].body.v_theta
     }
 
@@ -697,10 +723,12 @@ pub fn omega(&self) -> f64 {
         (il, el)
     }
 
+    /// Set throttle plate position in [0,1] (1 = fully closed, matching
+    /// `Intake::throttle_plate_position` = idle_position * throttle).
     pub fn set_throttle(&mut self, t: f64) {
-        self.throttle = t;
+        self.throttle = t.clamp(0.0, 1.0);
         for intake in &mut self.intakes {
-            intake.throttle = t;
+            intake.throttle = self.throttle;
         }
     }
 
@@ -809,11 +837,11 @@ pub fn omega(&self) -> f64 {
     pub fn step(&mut self, dt: f64) {
         self.time += dt;
 
-        // 1) Ignition
+        // 1) Ignition. `enabled` is controlled by scenario events; do not
+        // force it here or SetIgnition(false) becomes a no-op.
         let omega = self.omega();
         let cycle_angle = self.crankshafts[0].cycle_angle();
         self.ignition.update(dt, cycle_angle, omega);
-        self.ignition.enabled = true;
 
         for i in 0..self.chambers.len() {
             if self.ignition.ignition_event(i) {
@@ -860,7 +888,10 @@ pub fn omega(&self) -> f64 {
         self.update_force_state();
         self.system.process(dt);
 
-        // 6) Sync bodies back to part structs
+        // 6) Sync bodies back to part structs. The wall reaction is the raw
+        // accumulated solver impulse magnitude (N·s). The friction model in
+        // CombustionChamber::applyForce is empirically calibrated to this
+        // convention (matching the reference), so keep it un-scaled.
         self.crankshafts[0].body = self.system.bodies.bodies[self.crank_body].clone();
         for i in 0..self.rods.len() {
             self.rods[i].body = self.system.bodies.bodies[self.rod_body[i]].clone();
@@ -876,20 +907,7 @@ pub fn omega(&self) -> f64 {
             let head = self.heads[self.pistons[j].bank].clone();
             let pg = self.piston_geometry(j);
             self.chambers[j].update_volume(&bank, &head, &pg);
-            let p = self.chambers[j].system.pressure();
-            if p > self.diag_peak_p {
-                self.diag_peak_p = p;
-            }
-            let v = self.chambers[j].system.volume();
-            if v < self.diag_min_v {
-                self.diag_min_v = v;
-            }
-            if v > self.diag_max_v {
-                self.diag_max_v = v;
-            }
         }
-        // n_burnt_fuel is cumulative per chamber; report the running total.
-        self.diag_burnt_fuel = self.chambers.iter().map(|c| c.n_burnt_fuel).sum();
 
         self.stage_exhaust_audio();
     }
@@ -992,7 +1010,6 @@ pub struct PistonGeometry {
     compression_height: f64,
     wrist_pin: f64,
     displacement: f64,
-    #[allow(dead_code)]
     #[allow(dead_code)]
     wall_force: f64,
 }
@@ -1102,6 +1119,9 @@ impl Engine {
             let t = step as f64 * dt;
             while ev_i < events.len() && events[ev_i].time <= t {
                 match events[ev_i].event {
+                    // Scenario `throttle` values follow the engine-sim JSON
+                    // convention (1 = wide open); internally the throttle is
+                    // a plate position where 1 = closed, hence `1 - v`.
                     Event::SetThrottle(v) => self.set_throttle(1.0 - v),
                     Event::SetStarter(v) => self.starter_enabled = v,
                     Event::SetDyno(v) => self.dyno_enabled = v,
@@ -1147,16 +1167,21 @@ mod tests {
         let rod_len = 0.14;
         let deck = rod_len + stroke / 2.0 + 0.03;
 
+        // Realistic port-flow constants (k ≈ 0.001–0.007 for a small engine),
+        // matching the magnitude the rs24_v10.json config uses. The previous
+        // values (1e-7) were ~10 000x too restrictive to run at all.
         let intake_flow = Function::from_samples(
-            [(0.0, 1e-9), (0.01, 5e-7), (0.02, 8e-7)],
+            [(0.0, 0.0), (0.005, 0.004), (0.010, 0.007)],
             Interpolation::Linear,
         );
         let exhaust_flow = Function::from_samples(
-            [(0.0, 1e-9), (0.01, 5e-7), (0.02, 8e-7)],
+            [(0.0, 0.0), (0.005, 0.004), (0.010, 0.007)],
             Interpolation::Linear,
         );
 
-        let lobe = es_function::harmonic_lobe_profile(180.0, 0.01, 0.0, 1.0, 64);
+        // ref lift = 5 mm, max lift = 10 mm (the previous call passed 0.0 lift,
+        // producing an empty profile — the valves never opened).
+        let lobe = es_function::harmonic_lobe_profile(180.0, 0.005, 0.01, 1.0, 64);
 
         Engine::build(EngineBuild {
             meta: EngineMeta {
@@ -1208,9 +1233,9 @@ mod tests {
             intake: IntakeParams {
                 volume: 0.0005,
                 cross_section_area: 0.001,
-                input_flow_k: 1e-7,
+                input_flow_k: 0.02,
                 idle_flow_k: 5e-8,
-                runner_flow_rate: 1e-8,
+                runner_flow_rate: 0.006,
                 molecular_afr: 12.5,
                 idle_throttle_plate_position: 0.9,
                 runner_length: 0.1,
@@ -1219,9 +1244,9 @@ mod tests {
             exhausts: vec![ExhaustParams {
                 length: 0.5,
                 collector_cross_section: 0.002,
-                outlet_flow_rate: 1e-7,
+                outlet_flow_rate: 0.02,
                 primary_tube_length: 0.3,
-                primary_flow_rate: 1e-8,
+                primary_flow_rate: 0.03,
                 velocity_decay: 1.0,
                 audio_volume: 1.0,
                 impulse_response: None,
@@ -1237,7 +1262,7 @@ mod tests {
                 exhaust_runner_cross_section: 0.001,
                 cylinder_count: 1,
             }],
-            chamber_flow: vec![(1e-7, 1e-7, 0.1, 0.3, 0.001, 0.001)],
+            chamber_flow: vec![(0.006, 0.03, 0.1, 0.3, 0.001, 0.001)],
             ignition: IgnitionConfig {
                 firing_order: vec![(0, 0.0)],
                 timing_curve: Function::from_samples(
@@ -1275,6 +1300,9 @@ mod tests {
             crankcase_pressure: units::ATM,
             bank_exhaust: vec![(0, 0.3)],
             bank_sound_attenuation: vec![1.0],
+            head_cylinder_exhaust: vec![Vec::new()],
+            head_cylinder_primary_mm: vec![Vec::new()],
+            head_cylinder_attenuation: vec![Vec::new()],
         })
     }
 
@@ -1313,5 +1341,80 @@ mod tests {
         );
         assert_eq!(out.rpm.len(), out.audio_channels[0].len());
         assert!(out.exhaust_pressure.iter().all(|p| p.is_finite()));
+    }
+
+    #[test]
+    fn dyno_drives_to_target_speed() {
+        let mut e = single_cylinder_engine();
+        let events = vec![
+            ScenarioEvent { time: 0.0, event: Event::SetDyno(true) },
+            ScenarioEvent { time: 0.0, event: Event::SetDynoSpeed(rpm(2000.0)) },
+            ScenarioEvent { time: 0.0, event: Event::SetDynoHold(false) },
+        ];
+        let out = e.run_offline(0.6, &events);
+        let last = *out.rpm.last().unwrap();
+        assert!(
+            (last - 2000.0).abs() < 150.0,
+            "dyno did not reach target: {last} rpm"
+        );
+    }
+
+    #[test]
+    fn dyno_hold_brakes_overspeed() {
+        let mut e = single_cylinder_engine();
+        let events = vec![
+            ScenarioEvent { time: 0.0, event: Event::SetDyno(true) },
+            ScenarioEvent { time: 0.0, event: Event::SetDynoSpeed(rpm(3000.0)) },
+            ScenarioEvent { time: 0.0, event: Event::SetDynoHold(false) },
+            // Slow the target down with `hold` enabled: the dyno must brake.
+            ScenarioEvent { time: 0.4, event: Event::SetDynoSpeed(rpm(1500.0)) },
+            ScenarioEvent { time: 0.4, event: Event::SetDynoHold(true) },
+        ];
+        let out = e.run_offline(1.0, &events);
+        let last = *out.rpm.last().unwrap();
+        assert!(
+            last < 2000.0,
+            "dyno hold failed to brake: {last} rpm"
+        );
+        assert!(
+            (last - 1500.0).abs() < 250.0,
+            "dyno hold did not settle near target: {last} rpm"
+        );
+    }
+
+    #[test]
+    fn ignition_disabled_prevents_combustion() {
+        let mut e = single_cylinder_engine();
+        let events = vec![
+            ScenarioEvent { time: 0.0, event: Event::SetStarter(true) },
+            // Explicitly OFF: `step()` must not re-enable it.
+            ScenarioEvent { time: 0.0, event: Event::SetIgnition(false) },
+            ScenarioEvent { time: 0.0, event: Event::SetThrottle(0.15) },
+        ];
+        e.run_offline(0.3, &events);
+        let burnt: f64 = e.chambers.iter().map(|c| c.n_burnt_fuel).sum();
+        assert_eq!(burnt, 0.0, "ignition off but fuel was burned ({burnt})");
+    }
+
+    #[test]
+    fn full_throttle_combusts_and_revs() {
+        let mut e = single_cylinder_engine();
+        let events = vec![
+            ScenarioEvent { time: 0.0, event: Event::SetStarter(true) },
+            ScenarioEvent { time: 0.0, event: Event::SetIgnition(true) },
+            ScenarioEvent { time: 0.0, event: Event::SetThrottle(1.0) }, // wide open
+            ScenarioEvent { time: 0.5, event: Event::SetStarter(false) },
+        ];
+        let out = e.run_offline(2.0, &events);
+        let max_rpm = out.rpm.iter().cloned().fold(0.0, f64::max);
+        let burnt: f64 = e.chambers.iter().map(|c| c.n_burnt_fuel).sum();
+        // Combustion must actually burn fuel and add torque beyond the ~300 rpm
+        // the starter alone would hold (the previous WOT behaviour, at 394 rpm,
+        // is a symptom of the documented residual-dilution/tuning issue).
+        assert!(burnt > 0.0, "no fuel burned at wide open throttle");
+        assert!(
+            max_rpm > 340.0,
+            "combustion should push rpm past starter idle, max {max_rpm}"
+        );
     }
 }

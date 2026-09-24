@@ -22,26 +22,6 @@ pub fn write_wav_i16_mono<P: AsRef<Path>>(path: P, sample_rate: u32, samples: &[
     writer.finalize().map_err(|e| e.to_string())
 }
 
-/// Write multi-channel i16 samples (interleaved) to a WAV file.
-pub fn write_wav_i16_interleaved<P: AsRef<Path>>(
-    path: P,
-    sample_rate: u32,
-    channels: u16,
-    samples: &[i16],
-) -> Result<(), String> {
-    let spec = WavSpec {
-        channels,
-        sample_rate,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-    let mut writer = WavWriter::create(path.as_ref(), spec).map_err(|e| e.to_string())?;
-    for &s in samples {
-        writer.write_sample(s).map_err(|e| e.to_string())?;
-    }
-    writer.finalize().map_err(|e| e.to_string())
-}
-
 /// Write mono f64 samples (normalized [-1,1]) as 16-bit WAV.
 pub fn write_wav_f64_mono<P: AsRef<Path>>(path: P, sample_rate: u32, samples: &[f64]) -> Result<(), String> {
     let i16s: Vec<i16> = samples
@@ -122,7 +102,7 @@ mod tests {
         assert_eq!(sr, 48_000);
         assert_eq!(back[0], 0);
         assert_eq!(back[3], i16::MAX);
-        assert_eq!(back[4], (-1.0f64 * i16::MAX as f64) as i16);
+        assert_eq!(back[4], -(i16::MAX as f64) as i16);
         let _ = std::fs::remove_file(&path);
     }
 }

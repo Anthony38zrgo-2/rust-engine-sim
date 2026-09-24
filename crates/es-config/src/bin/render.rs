@@ -69,7 +69,7 @@ fn run(
 
     let mut engine = Engine::build(build);
 
-    let duration = duration_override.unwrap_or_else(|| cfg.scenario.duration_s);
+    let duration = duration_override.unwrap_or(cfg.scenario.duration_s);
     if duration <= 0.0 {
         return Err("duration must be > 0".into());
     }
@@ -109,73 +109,6 @@ fn run(
 
     let out = engine.run_offline(duration, &events);
 
-    // Temporary diagnostics
-    {
-        let max_p = engine
-            .chambers
-            .iter()
-            .map(|c| c.firing_pressure())
-            .fold(0.0f64, f64::max);
-        let _cur_p: Vec<f64> = engine.chambers.iter().map(|c| c.system.pressure()).collect();
-        let lit: Vec<bool> = engine.chambers.iter().map(|c| c.lit).collect();
-        let p_fuel: Vec<f64> = engine.chambers.iter().map(|c| c.system.mix().p_fuel).collect();
-        let p_o2: Vec<f64> = engine.chambers.iter().map(|c| c.system.mix().p_o2).collect();
-        let intake_pf = engine.intakes[0].system.mix().p_fuel;
-        let intake_p = engine.intakes[0].system.pressure();
-        let omega = engine.omega();
-        let mut max_il = 0.0f64;
-        let mut max_el = 0.0f64;
-        for k in 0..720 {
-            let crank = k as f64 * std::f64::consts::PI / 360.0;
-            for j in 0..engine.chambers.len().min(3) {
-                let il = engine.valve_lifts(j, crank).0;
-                let el = engine.valve_lifts(j, crank).1;
-                max_il = max_il.max(il);
-                max_el = max_el.max(el);
-            }
-        }
-        eprintln!(
-            "DIAG max_firing_p={max_p:.0} lit_any={} intake_pf={intake_pf:.4} intake_p={intake_p:.0} omega={omega:.1} max_il={max_il:.4} max_el={max_el:.4} p_fuel0={:?} p_o2_0={:.3}",
-            lit.iter().any(|&x| x),
-            &p_fuel[..3.min(p_fuel.len())],
-            p_o2.first().copied().unwrap_or(0.0),
-        );
-        eprintln!(
-            "DIAG peak_p={:.0} min_v={:.4e} max_v={:.4e} v_end={:.4e} burnt_fuel={:.4e} n_burnt={:?}",
-            engine.diag_peak_p,
-            engine.diag_min_v,
-            engine.diag_max_v,
-            c0_vol(&engine),
-            engine.diag_burnt_fuel,
-            engine.chambers.iter().map(|c| c.n_burnt_fuel).collect::<Vec<_>>(),
-        );
-        // Spark-time mix (approx): dump first chamber mix + molecular_afr equivalence window
-        let c0 = &engine.chambers[0];
-        let m = c0.system.mix();
-        let afr = if m.p_fuel > 0.0 { m.p_o2 / m.p_fuel } else { 0.0 };
-        // default fuel molecular_afr = 12.5
-        let eq = afr / 12.5;
-        eprintln!(
-            "DIAG end_ch0 p={:.0} T={:.0} V={:.3e} n={:.3e} p_fuel={:.4e} p_o2={:.4} afr={:.2} eq={:.3} lit={}",
-            c0.system.pressure(),
-            c0.system.temperature(),
-            c0.system.volume(),
-            c0.system.n(),
-            m.p_fuel,
-            m.p_o2,
-            afr,
-            eq,
-            c0.lit,
-        );
-        let n = out.rpm.len();
-        if n > 10 {
-            let samples: Vec<String> = (0..10)
-                .map(|i| format!("{:.0}", out.rpm[i * n / 10]))
-                .collect();
-            eprintln!("DIAG rpm_tens={}", samples.join(","));
-        }
-    }
-
     let audio_rate = cfg.audio.sample_rate;
     let params = AudioParameters {
         volume: cfg.audio.volume,
@@ -185,6 +118,7 @@ fn run(
         input_sample_noise_frequency_cutoff: cfg.audio.input_sample_noise_frequency_cutoff,
         air_noise: cfg.audio.air_noise,
         air_noise_frequency_cutoff: cfg.audio.air_noise_frequency_cutoff,
+        input_antialias_frequency_cutoff: cfg.audio.input_antialias_frequency_cutoff,
         leveler_target: cfg
             .audio
             .leveler_target
@@ -252,22 +186,27 @@ fn run(
         .iter()
         .position(|&s| s == i16::MIN || s == i16::MAX)
         .unwrap_or(usize::MAX);
+    // Fraction of samples sitting at the leveler target — the real
+    // "brickwall limiting" indicator.
+    let leveler_target = params.leveler_target as f64;
+    let limited = samples
+        .iter()
+        .filter(|&&s| (s as i32).abs() >= (leveler_target * 0.99) as i32)
+        .count();
 
     write_wav_i16_mono(&out_path, audio_rate as u32, &samples)?;
 
     let rpm_first = out.rpm.first().copied().unwrap_or(0.0);
     let rpm_last = out.rpm.last().copied().unwrap_or(0.0);
+    let rpm_peak = out.rpm.iter().cloned().fold(0.0, f64::max);
 
     Ok(format!(
-        "wrote {} ({} samples @ {} Hz, peak={peak}, clipped={clipped} first_clip={first_clip}, nonzero={nonzero}, rpm {rpm_first:.0}→{rpm_last:.0})",
+        "wrote {} ({} samples @ {} Hz, peak={peak}, limited={:.2}% clipped={clipped} first_clip={first_clip}, nonzero={nonzero}, rpm {rpm_first:.0}→{rpm_last:.0}, peak_rpm {rpm_peak:.0})",
         out_path.display(),
         samples.len(),
-        audio_rate as u32
+        audio_rate as u32,
+        100.0 * limited as f64 / samples.len().max(1) as f64
     ))
-}
-
-fn c0_vol(engine: &Engine) -> f64 {
-    engine.chambers.first().map(|c| c.system.volume()).unwrap_or(0.0)
 }
 
 fn resolve_ir(assets: &Path, rel: &str) -> PathBuf {

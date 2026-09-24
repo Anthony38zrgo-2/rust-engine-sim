@@ -314,7 +314,7 @@ mod tests {
         for i in 0..=300 {
             let x = i as f64 * 0.01;
             let y = f.sample(x);
-            assert!(y >= -1e-9 && y <= 1.0 + 1e-9, "y={y} at x={x}");
+            assert!((-1e-9..=1.0 + 1e-9).contains(&y), "y={y} at x={x}");
         }
     }
 

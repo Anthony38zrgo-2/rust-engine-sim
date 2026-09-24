@@ -288,7 +288,8 @@ impl GasSystem {
         )
     }
 
-    /// Compressible orifice mass-flow rate in mol/s (signed by pressure gradient).
+/// Compressible orifice mass-flow rate in mol/s (signed by pressure gradient).
+    #[allow(clippy::too_many_arguments)]
     pub fn flow_rate(
         k_flow: f64,
         p0: f64,
@@ -644,17 +645,19 @@ impl GasSystem {
         flow
     }
 
-    pub fn pressure_equilibrium_max_flow(&self, b: &GasSystem) -> f64 {
+pub fn pressure_equilibrium_max_flow(&self, b: &GasSystem) -> f64 {
         if self.pressure() > b.pressure() {
             let max_flow = (b.volume() * self.state.e_k - self.volume() * b.state.e_k)
                 / (b.volume() * self.kinetic_energy_per_mol()
                     + self.volume() * b.kinetic_energy_per_mol());
+            // Reference: std::fmin(0, std::fmin(maxFlow, n()))
             0.0_f64.min(max_flow.min(self.n()))
         } else {
             let max_flow = (b.volume() * self.state.e_k - self.volume() * b.state.e_k)
                 / (b.volume() * b.kinetic_energy_per_mol()
                     + self.volume() * b.kinetic_energy_per_mol());
-            0.0_f64.max(max_flow).min(0.0).max(-b.n())
+            // Reference: std::fmax(-b.n(), std::fmax(maxFlow, 0.0)).
+            (-b.n()).max(max_flow.max(0.0))
         }
     }
 

@@ -560,6 +560,8 @@ pub struct AudioFile {
     pub air_noise: f32,
     #[serde(default = "d_air_fc")]
     pub air_noise_frequency_cutoff: f32,
+    #[serde(default = "d_input_antialias_fc")]
+    pub input_antialias_frequency_cutoff: f32,
     #[serde(default = "d_in_fc")]
     pub input_sample_noise_frequency_cutoff: f32,
     #[serde(default)]
@@ -589,6 +591,9 @@ fn d_air() -> f32 {
 fn d_air_fc() -> f32 {
     2000.0
 }
+fn d_input_antialias_fc() -> f32 {
+    1900.0
+}
 fn d_in_fc() -> f32 {
     10_000.0
 }
@@ -604,6 +609,7 @@ impl Default for AudioFile {
             input_sample_noise: d_jitter(),
             air_noise: d_air(),
             air_noise_frequency_cutoff: d_air_fc(),
+            input_antialias_frequency_cutoff: d_input_antialias_fc(),
             input_sample_noise_frequency_cutoff: d_in_fc(),
             leveler_target: None,
             leveler_max_gain: None,
@@ -624,6 +630,15 @@ pub fn load_str(text: &str) -> Result<EngineFile, String> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
 
+/// Build a port-flow curve from JSON samples.
+///
+/// The JSON convention mirrors the reference `.mr` flow tables:
+/// - `x` = valve lift: values > 0.05 are treated as thousandths of an inch
+///   (e.g. `50` = 0.050"), anything ≤ 0.05 is taken as meters.
+/// - `y` = bench flow: values > 1 are treated as SCFM (converted to an orifice
+///   constant `k_28in_h2o`); values in (0, 1] are taken as an already-scaled
+///   orifice constant (the values this codebase produces are ~1e-8..1e-6, so
+///   SCFM values ≤ 1 would be misread — keep bench flows > 1).
 fn flow_function(samples: &[[f64; 2]], default: bool) -> Function {
     // Port-flow samples are [lift_thou, flow_scfm] as in original add_flow_sample → k_28inH2O(flow).
     // Values already in orifice-k range (tiny) are left as-is.
@@ -769,7 +784,9 @@ impl EngineFile {
         let intake = self.intake.clone().into();
         let exhausts: Vec<_> = self.exhausts.iter().map(|e| e.clone().into()).collect();
 
-        let heads: Vec<CylinderHeadParams> = self
+        // Heads. `Engine::build` indexes heads by bank, so order by the
+        // `bank` field (config files may list them in any order).
+        let mut heads: Vec<CylinderHeadParams> = self
             .heads
             .iter()
             .map(|h| CylinderHeadParams {
@@ -784,25 +801,38 @@ impl EngineFile {
                 cylinder_count: h.cylinder_count,
             })
             .collect();
+        heads.sort_by_key(|h| h.bank);
+        let head_by_bank: std::collections::HashMap<usize, &CylinderHeadParams> =
+            heads.iter().map(|h| (h.bank, h)).collect();
+
+        let bank_exhaust: Vec<(usize, f64)> = self
+            .banks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let sys = b.exhaust_system.unwrap_or(i.min(self.exhausts.len().saturating_sub(1)));
+                (sys, units::mm(b.primary_length_mm))
+            })
+            .collect();
 
         let chamber_flow: Vec<(f64, f64, f64, f64, f64, f64)> = self
             .cylinders
             .iter()
             .map(|c| {
-                let head = self.heads.get(c.bank).or_else(|| self.heads.first()).unwrap();
-                let intake_cs = head.intake_runner_cross_section_cm2 * 1e-4;
-                let exhaust_cs = head.exhaust_runner_cross_section_cm2 * 1e-4;
+                let head = head_by_bank
+                    .get(&c.bank)
+                    .copied()
+                    .or_else(|| heads.first())
+                    .unwrap();
+                let intake_cs = head.intake_runner_cross_section;
+                let exhaust_cs = head.exhaust_runner_cross_section;
                 let runner_len = units::mm(self.intake.runner_length_mm.max(1.0));
-                let primary_len = self
-                    .exhausts
-                    .first()
+                let (sys, _) = bank_exhaust.get(c.bank).copied().unwrap_or((0, 0.0));
+                let ex = self.exhausts.get(sys).or_else(|| self.exhausts.first());
+                let primary_len = ex
                     .map(|e| units::mm(e.primary_tube_length_mm))
                     .unwrap_or(0.3);
-                let primary_flow_k = self
-                    .exhausts
-                    .first()
-                    .map(|e| e.primary_flow_k)
-                    .unwrap_or_else(d_flow_k);
+                let primary_flow_k = ex.map(|e| e.primary_flow_k).unwrap_or_else(d_flow_k);
                 (
                     self.intake.runner_flow_k,
                     primary_flow_k,
@@ -868,16 +898,6 @@ impl EngineFile {
             base_radius: units::mm(self.cams.base_radius_mm),
         };
 
-        let bank_exhaust: Vec<(usize, f64)> = self
-            .banks
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let sys = b.exhaust_system.unwrap_or(i.min(self.exhausts.len().saturating_sub(1)));
-                (sys, units::mm(b.primary_length_mm))
-            })
-            .collect();
-
         let bank_sound_attenuation: Vec<f64> =
             self.banks.iter().map(|b| b.sound_attenuation).collect();
 
@@ -910,8 +930,63 @@ impl EngineFile {
             },
         });
 
-        // Override per-cylinder exhaust if specified on head
-        // (EngineBuild only has bank-level; per-cyl overrides applied post-build in render)
+        // Per-head, per-cylinder overrides (JSON `cylinder_exhaust`,
+        // `cylinder_primary_mm`, `cylinder_attenuation`), re-indexed by bank.
+        let head_cylinder_exhaust: Vec<Vec<Option<usize>>> = self
+            .heads
+            .iter()
+            .map(|h| {
+                if h.cylinder_exhaust.len() == h.cylinder_count {
+                    h.cylinder_exhaust.clone()
+                } else {
+                    vec![None; h.cylinder_count]
+                }
+            })
+            .collect();
+        let mut head_cylinder_exhaust = head_cylinder_exhaust;
+        let mut by_bank = std::collections::HashMap::new();
+        for (h, v) in self.heads.iter().zip(head_cylinder_exhaust.drain(..)) {
+            by_bank.insert(h.bank, v);
+        }
+        let head_cylinder_exhaust = by_bank;
+
+        let head_cylinder_primary_mm: Vec<Vec<f64>> = self
+            .heads
+            .iter()
+            .map(|h| {
+                if h.cylinder_primary_mm.len() == h.cylinder_count {
+                    h.cylinder_primary_mm.iter().map(|&m| units::mm(m)).collect()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let mut head_cylinder_primary_mm = head_cylinder_primary_mm;
+        let mut by_bank_prim = std::collections::HashMap::new();
+        for (h, v) in self.heads.iter().zip(head_cylinder_primary_mm.drain(..)) {
+            by_bank_prim.insert(h.bank, v);
+        }
+        let head_cylinder_primary_mm = by_bank_prim;
+
+        let head_cylinder_attenuation: Vec<Vec<f64>> = self
+            .heads
+            .iter()
+            .map(|h| {
+                if h.cylinder_attenuation.len() == h.cylinder_count {
+                    h.cylinder_attenuation.clone()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let mut head_cylinder_attenuation = head_cylinder_attenuation;
+        let mut by_bank_att = std::collections::HashMap::new();
+        for (h, v) in self.heads.iter().zip(head_cylinder_attenuation.drain(..)) {
+            by_bank_att.insert(h.bank, v);
+        }
+        let head_cylinder_attenuation = by_bank_att;
+
+let n_heads = heads.len();
 
         EngineBuild {
             meta,
@@ -939,6 +1014,15 @@ impl EngineFile {
             crankcase_pressure: self.fluids.crankcase_pressure_pa,
             bank_exhaust,
             bank_sound_attenuation,
+            head_cylinder_exhaust: (0..n_heads)
+                .map(|i| head_cylinder_exhaust.get(&i).cloned().unwrap_or_default())
+                .collect(),
+            head_cylinder_primary_mm: (0..n_heads)
+                .map(|i| head_cylinder_primary_mm.get(&i).cloned().unwrap_or_default())
+                .collect(),
+            head_cylinder_attenuation: (0..n_heads)
+                .map(|i| head_cylinder_attenuation.get(&i).cloned().unwrap_or_default())
+                .collect(),
         }
     }
 }
@@ -1015,5 +1099,66 @@ mod tests {
         assert!(build.crank.crank_throw > 0.0);
         // deck height critical for positive volume
         assert!(build.banks[0].deck_height > build.crank.crank_throw);
+    }
+
+    #[test]
+    fn heads_are_ordered_by_bank_and_overrides_wire() {
+        // Heads listed out of order (bank 1 before bank 0) must be re-indexed
+        // by bank, and per-cylinder exhaust overrides must reach the engine.
+        let json = r#"{
+            "name": "v2-order-test",
+            "crank": {
+                "mass_kg": 5.0,
+                "flywheel_mass_kg": 2.0,
+                "moment_of_inertia_kg_m2": 0.2,
+                "stroke_mm": 86.0,
+                "tdc_deg": 0.0,
+                "friction_torque_nm": 4.0,
+                "rod_journals": 1,
+                "journal_angles_deg": [0.0]
+            },
+            "banks": [
+                {"angle_deg": 0.0, "bore_mm": 86.0, "exhaust_system": 0},
+                {"angle_deg": 0.0, "bore_mm": 86.0, "exhaust_system": 1}
+            ],
+            "cylinders": [
+                {"bank": 0, "bank_cylinder": 0, "rod_length_mm": 140.0, "compression_height_mm": 20.0},
+                {"bank": 1, "bank_cylinder": 0, "rod_length_mm": 140.0, "compression_height_mm": 20.0}
+            ],
+            "intake": {},
+            "exhausts": [{}, {}],
+            "heads": [
+                {"bank": 1, "cylinder_count": 1, "cylinder_exhaust": [1], "cylinder_primary_mm": [99.0], "cylinder_attenuation": [0.5]},
+                {"bank": 0, "cylinder_count": 1, "cylinder_exhaust": [0], "cylinder_primary_mm": [11.0], "cylinder_attenuation": [0.7]}
+            ],
+            "ignition": {
+                "firing_order": [[0, 0.0], [1, 360.0]],
+                "timing_curve_rpm_deg": [[0, 0], [4000, 24]],
+                "rev_limit_rpm": 5500
+            }
+        }"#;
+        let f = load_str(json).unwrap();
+        let build = f.to_build();
+        assert_eq!(build.heads[0].bank, 0);
+        assert_eq!(build.heads[1].bank, 1);
+        assert_eq!(build.head_cylinder_exhaust[0], vec![Some(0)]);
+        assert_eq!(build.head_cylinder_exhaust[1], vec![Some(1)]);
+        assert!((build.head_cylinder_primary_mm[0][0] - 0.011).abs() < 1e-9);
+        assert_eq!(build.head_cylinder_attenuation[1], vec![0.5]);
+
+        let mut engine = es_sim::Engine::build(build);
+        assert_eq!(engine.heads[0].exhaust_system(0), Some(0));
+        assert_eq!(engine.heads[1].exhaust_system(0), Some(1));
+        assert!((engine.heads[1].header_primary_length(0) - 0.099).abs() < 1e-9);
+        assert!((engine.heads[0].sound_attenuation(0) - 0.7).abs() < 1e-9);
+
+        let events = vec![
+            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetStarter(true) },
+            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetIgnition(true) },
+            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetThrottle(0.1) },
+        ];
+        let out = engine.run_offline(0.4, &events);
+        assert!(out.rpm.iter().all(|r| r.is_finite()));
+        assert!(!out.audio_channels[0].is_empty());
     }
 }

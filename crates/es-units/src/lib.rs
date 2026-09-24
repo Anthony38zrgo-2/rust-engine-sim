@@ -1,10 +1,10 @@
 //! Physical constants and unit helpers (SI base units).
 
-pub const PI: f64 = 3.14159265359;
+pub use std::f64::consts::PI;
 /// Universal gas constant [J/(mol·K)]
 pub const R: f64 = 8.31446261815324;
-pub const ROOT_2: f64 = 1.4142135623730951;
-pub const E: f64 = 2.718281828459045;
+pub const ROOT_2: f64 = std::f64::consts::SQRT_2;
+pub use std::f64::consts::E;
 
 // Force
 pub const N: f64 = 1.0;

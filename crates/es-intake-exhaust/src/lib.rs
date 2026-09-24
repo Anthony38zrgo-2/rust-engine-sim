@@ -245,17 +245,17 @@ impl ExhaustSystem {
             .reset(units::ATM, units::celsius(25.0), air_mix);
 
         {
+            // system_0 = atmosphere (huge cross section), system_1 = collector,
+            // so the cross sections must follow the same order (as in Intake).
             let mut params = es_gas::FlowParams {
                 k_flow: self.params.outlet_flow_rate,
                 dt,
                 direction: (1.0, 0.0),
-                cross_section_0: self.params.collector_cross_section,
-                cross_section_1: 10.0,
+                cross_section_0: 10.0,
+                cross_section_1: self.params.collector_cross_section,
                 system_0: &mut self.atmosphere,
                 system_1: &mut self.system,
             };
-            // C++: flowParams.system_0 = atmosphere, system_1 = m_system,
-            // then m_system.flow(flowParams) — flow() static uses system_0→1
             self.flow = es_gas::GasSystem::flow_between(&mut params);
         }
 

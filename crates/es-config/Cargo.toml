@@ -17,6 +17,7 @@ es-dsp = { path = "../es-dsp" }
 es-audio-io = { path = "../es-audio-io" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustfft = "6"
 
 [[bin]]
 name = "render"

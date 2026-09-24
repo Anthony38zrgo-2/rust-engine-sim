@@ -94,8 +94,7 @@ impl Crankshaft {
     }
 
     pub fn cycle_angle(&self) -> f64 {
-        let wrapped = (-self.angle()).rem_euclid(4.0 * PI);
-        wrapped
+        (-self.angle()).rem_euclid(4.0 * PI)
     }
 
     pub fn tdc(&self) -> f64 {
@@ -478,8 +477,7 @@ impl Camshaft {
     }
 
     pub fn angle(&self, crank_angle: f64) -> f64 {
-        let angle = ((crank_angle + self.advance) * 0.5).rem_euclid(2.0 * PI);
-        angle
+        ((crank_angle + self.advance) * 0.5).rem_euclid(2.0 * PI)
     }
 
     pub fn crankshaft(&self) -> usize {
@@ -492,58 +490,6 @@ impl Camshaft {
 
     pub fn advance(&self) -> f64 {
         self.advance
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Valvetrain
-// ---------------------------------------------------------------------------
-
-pub trait Valvetrain {
-    fn intake_valve_lift(&self, cylinder: usize, crank_angle: f64) -> f64;
-    fn exhaust_valve_lift(&self, cylinder: usize, crank_angle: f64) -> f64;
-}
-
-/// Standard DOHC/SOHC: one intake cam, one exhaust cam shared by cylinders.
-#[derive(Clone, Debug)]
-pub struct StandardValvetrain {
-    pub intake_camshaft: usize,
-    pub exhaust_camshaft: usize,
-}
-
-impl Valvetrain for StandardValvetrain {
-    fn intake_valve_lift(&self, cylinder: usize, crank_angle: f64) -> f64 {
-        // Camshaft lookup needs actual cam; caller provides via Engine wiring.
-        // This trait is implemented on EngineAssembly which holds cams.
-        let _ = (cylinder, crank_angle);
-        0.0
-    }
-
-    fn exhaust_valve_lift(&self, cylinder: usize, crank_angle: f64) -> f64 {
-        let _ = (cylinder, crank_angle);
-        0.0
-    }
-}
-
-/// Valvetrain that resolves lifts through a cam table holder.
-pub struct ValvetrainRefs<'a> {
-    pub cams: &'a [Camshaft],
-    pub intake_cam: usize,
-    pub exhaust_cam: usize,
-    /// Map cylinder → lobe index on each cam
-    pub intake_lobe: Vec<usize>,
-    pub exhaust_lobe: Vec<usize>,
-}
-
-impl<'a> ValvetrainRefs<'a> {
-    pub fn intake_lift(&self, cylinder: usize, crank_angle: f64) -> f64 {
-        let cam = &self.cams[self.intake_cam];
-        cam.valve_lift(self.intake_lobe[cylinder], crank_angle)
-    }
-
-    pub fn exhaust_lift(&self, cylinder: usize, crank_angle: f64) -> f64 {
-        let cam = &self.cams[self.exhaust_cam];
-        cam.valve_lift(self.exhaust_lobe[cylinder], crank_angle)
     }
 }
 

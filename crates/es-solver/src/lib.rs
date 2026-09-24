@@ -255,6 +255,9 @@ impl Constraint for LineConstraint {
         self.impulse += lambda.abs();
     }
 
+    /// Accumulated impulse magnitude across solver iterations (N·s). The engine's
+    /// friction model consumes this raw magnitude (reference convention, the
+    /// friction constants are calibrated to it), so callers must not rescale.
     fn reaction(&self) -> f64 {
         self.impulse
     }

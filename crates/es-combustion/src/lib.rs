@@ -319,10 +319,9 @@ pub struct CombustionChamber {
     primary_to_collector_rate: f64,
     cylinder_area: f64,
     #[allow(dead_code)]
-    #[allow(dead_code)]
     cylinder_width: f64,
 
-last_exhaust_flow: f64,
+    last_exhaust_flow: f64,
     last_intake_flow: f64,
     exhaust_flow: f64,
     crankcase_pressure: f64,
@@ -332,8 +331,20 @@ last_exhaust_flow: f64,
     pressure_history: [f64; 256],
     piston_speed_history: [f64; 256],
 
+    /// Deterministic per-chamber RNG for combustion randomness (xorshift64).
+    rng_state: u64,
+
     pub piston: usize,
     pub head: usize,
+}
+
+/// SplitMix64-style seed mixer so different chambers get distinct, stable
+/// sequences while runs remain reproducible (no global rand()).
+fn rng_seed(piston: usize, head: usize) -> u64 {
+    let mut z = 0x9E37_79B9_7F4A_7C15u64 ^ ((piston as u64) << 32 | head as u64);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 pub struct ChamberRefs<'a> {
@@ -419,9 +430,20 @@ impl CombustionChamber {
             max_volume: refs.head.combustion_chamber_volume() + cylinder_area * refs.stroke,
             pressure_history: [0.0; 256],
             piston_speed_history: [0.0; 256],
+            rng_state: rng_seed(piston, head),
             piston,
             head,
         }
+    }
+
+    /// xorshift64 uniform in [0, 1).
+    fn next_random(&mut self) -> f64 {
+        let mut x = self.rng_state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng_state = x;
+        (x >> 11) as f64 / (1u64 << 53) as f64
     }
 
     pub fn volume<P: PistonLike>(&self, bank: &CylinderBank, head: &CylinderHead, piston: &P) -> f64 {
@@ -478,7 +500,7 @@ impl CombustionChamber {
         }
         let afr = self.system.mix().p_o2 / self.system.mix().p_fuel;
         let equivalence = afr / fuel.molecular_afr();
-        if equivalence < 0.5 || equivalence > 1.9 {
+        if !(0.5..=1.9).contains(&equivalence) {
             return;
         }
 
@@ -506,10 +528,12 @@ impl CombustionChamber {
         let mixing = 1.0
             - ((turbulence / p.max_turbulence_effect).clamp(0.0, 1.0)
                 * (1.0 - dilution / p.max_dilution_effect).clamp(0.0, 1.0));
-        // Deterministic "random" from mix for reproducibility
+        // Per-event randomness (deterministic per chamber, varied across
+        // ignitions) instead of a fixed 0.5 — the run-to-run variation is
+        // part of the acoustic texture, as in the reference `rand()`.
         let rand_s = p.low_efficiency_attenuation
             * ((1.0 - p.burning_efficiency_randomness)
-                + p.burning_efficiency_randomness * 0.5);
+                + p.burning_efficiency_randomness * self.next_random());
         let eff_att = mixing * rand_s + (1.0 - mixing);
         self.flame.efficiency = eff_att * p.max_burning_efficiency;
         self.flame.flame_speed = fuel.flame_speed(
@@ -540,6 +564,7 @@ impl CombustionChamber {
     }
 
     /// Gas exchange + flame advance (port of flow()).
+    #[allow(clippy::too_many_arguments)]
     pub fn flow<P: PistonLike>(
         &mut self,
         dt: f64,
@@ -838,6 +863,43 @@ mod tests {
         im.update(1e-4, 0.1, -100.0);
         // With wrap from 6.0 to 0.1, event depends on logic; at least should not panic
         im.reset_events();
+    }
+
+    #[test]
+    fn ignition_fires_on_cycle_wrap() {
+        let mut im = IgnitionModule::new(IgnitionParams {
+            cylinder_count: 1,
+            timing_curve: Function::from_samples([(0.0, 0.0), (1000.0, 0.0)], es_function::Interpolation::Linear),
+            rev_limit: 1000.0,
+            limiter_duration: 0.1,
+        });
+        im.set_firing_order(0, 0.0);
+        im.enabled = true;
+        // Start just below 4π, then advance past 0 (omega < 0 => cycle increases).
+        im.reset(6.2);
+        im.update(1e-4, 0.2, -1000.0);
+        assert!(im.ignition_event(0), "plug should fire crossing the 0° wrap");
+        im.reset_events();
+
+        // No wrap: no fire when the firing angle is not traversed.
+        im.reset(1.0);
+        im.update(1e-4, 2.0, -1000.0);
+        assert!(!im.ignition_event(0), "plug must not fire outside its window");
+    }
+
+    #[test]
+    fn ignition_respects_enabled_flag() {
+        let mut im = IgnitionModule::new(IgnitionParams {
+            cylinder_count: 1,
+            timing_curve: Function::from_samples([(0.0, 0.0), (1000.0, 0.0)], es_function::Interpolation::Linear),
+            rev_limit: 1000.0,
+            limiter_duration: 0.1,
+        });
+        im.set_firing_order(0, 0.0);
+        im.enabled = false;
+        im.reset(6.2);
+        im.update(1e-4, 0.2, -1000.0);
+        assert!(!im.ignition_event(0), "disabled ignition must never fire");
     }
 
     #[test]

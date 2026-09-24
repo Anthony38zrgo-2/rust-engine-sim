@@ -7,3 +7,4 @@ description = "DSP filters for engine audio synthesis"
 
 [dependencies]
 es-function = { path = "../es-function" }
+rustfft = "6"
