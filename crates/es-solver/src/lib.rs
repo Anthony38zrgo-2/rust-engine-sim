@@ -51,10 +51,7 @@ impl RigidBody {
     pub fn local_to_world(&self, lx: f64, ly: f64) -> (f64, f64) {
         // NOTE: f64::sin_cos returns (sin, cos).
         let (s, c) = self.theta.sin_cos();
-        (
-            self.p_x + c * lx - s * ly,
-            self.p_y + s * lx + c * ly,
-        )
+        (self.p_x + c * lx - s * ly, self.p_y + s * lx + c * ly)
     }
 
     pub fn clear_forces(&mut self) {
@@ -90,6 +87,7 @@ const KD_DEFAULT: f64 = 10.0;
 /// Match C++ OptimizedNsv bias_factor=1.0 (full positional correction per step).
 /// Sequential impulse needs more iterations than a global linear solve.
 const SOLVER_ITERATIONS: usize = 32;
+const PROJECTION_ITERATIONS: usize = 4;
 /// Baumgarte beta: 1.0 = fully correct position error in one step (C++ bias_factor).
 const BIAS_BETA: f64 = 1.0;
 
@@ -105,6 +103,16 @@ pub trait Constraint {
     fn set_speed_control(&mut self, _enabled: bool, _hold: bool) {}
     /// Optional target angular velocity for speed-control constraints.
     fn set_rotation_speed(&mut self, _speed: f64) {}
+    /// Lower priorities are solved first. Speed sources must precede the
+    /// geometric constraints so their velocity override does not discard the
+    /// linkage corrections on the crank.
+    fn solver_priority(&self) -> i32 {
+        0
+    }
+    /// Position-level (non-linear Gauss-Seidel) correction applied after the
+    /// position integration to remove the drift that velocity-level impulses
+    /// leave behind at high angular rates.
+    fn project(&mut self, _bodies: &mut BodySet) {}
 }
 
 /// Point on body pinned to a world position.
@@ -176,13 +184,27 @@ impl Constraint for FixedPositionConstraint {
     fn reaction(&self) -> f64 {
         self.impulse
     }
+
+    fn project(&mut self, bodies: &mut BodySet) {
+        let b = &bodies.bodies[self.body];
+        let (wx, wy) = b.local_to_world(self.local.0, self.local.1);
+        let r = (wx - b.p_x, wy - b.p_y);
+        let err = (wx - self.world.0, wy - self.world.1);
+        let im_x = b.inv_m + b.inv_i * r.1 * r.1;
+        let im_y = b.inv_m + b.inv_i * r.0 * r.0;
+        let em_x = if im_x > 0.0 { 1.0 / im_x } else { 0.0 };
+        let em_y = if im_y > 0.0 { 1.0 / im_y } else { 0.0 };
+        let lx = -err.0 * em_x;
+        let ly = -err.1 * em_y;
+        let b = &mut bodies.bodies[self.body];
+        b.p_x += lx * b.inv_m;
+        b.p_y += ly * b.inv_m;
+        b.theta += b.inv_i * (r.0 * ly - r.1 * lx);
+    }
 }
 
 fn point_velocity(b: &RigidBody, r: (f64, f64)) -> (f64, f64) {
-    (
-        b.v_x - b.v_theta * r.1,
-        b.v_y + b.v_theta * r.0,
-    )
+    (b.v_x - b.v_theta * r.1, b.v_y + b.v_theta * r.0)
 }
 
 fn apply_point_impulse(b: &mut RigidBody, ix: f64, iy: f64, r: (f64, f64)) {
@@ -210,7 +232,11 @@ pub struct LineConstraint {
 impl LineConstraint {
     pub fn new(body: usize, d: (f64, f64), p0: (f64, f64)) -> Self {
         let len = (d.0 * d.0 + d.1 * d.1).sqrt();
-        let d = if len > 0.0 { (d.0 / len, d.1 / len) } else { (1.0, 0.0) };
+        let d = if len > 0.0 {
+            (d.0 / len, d.1 / len)
+        } else {
+            (1.0, 0.0)
+        };
         Self {
             body,
             local: (0.0, 0.0),
@@ -260,6 +286,27 @@ impl Constraint for LineConstraint {
     /// friction constants are calibrated to it), so callers must not rescale.
     fn reaction(&self) -> f64 {
         self.impulse
+    }
+
+    fn project(&mut self, bodies: &mut BodySet) {
+        let b = &bodies.bodies[self.body];
+        let (wx, wy) = b.local_to_world(self.local.0, self.local.1);
+        let r = (wx - b.p_x, wy - b.p_y);
+        let rel = (wx - self.p0.0, wy - self.p0.1);
+        let err = rel.0 * self.n.0 + rel.1 * self.n.1;
+        if err == 0.0 {
+            return;
+        }
+        let rn = r.0 * self.n.0 + r.1 * self.n.1;
+        let im = b.inv_m + b.inv_i * rn * rn;
+        if im <= 0.0 {
+            return;
+        }
+        let lambda = -err / im;
+        let b = &mut bodies.bodies[self.body];
+        b.p_x += lambda * self.n.0 * b.inv_m;
+        b.p_y += lambda * self.n.1 * b.inv_m;
+        b.theta += b.inv_i * (r.0 * lambda * self.n.1 - r.1 * lambda * self.n.0);
     }
 }
 
@@ -335,6 +382,48 @@ impl LinkConstraint {
 
         self.impulse += lambda.abs();
     }
+
+    fn project_axis(&self, bodies: &mut BodySet, axis: (f64, f64)) {
+        let (i1, i2) = (self.body1, self.body2);
+        let (r1, r2, err, im1, ii1, im2, ii2) = {
+            let b1 = &bodies.bodies[i1];
+            let b2 = &bodies.bodies[i2];
+            let (w1x, w1y) = b1.local_to_world(self.local1.0, self.local1.1);
+            let (w2x, w2y) = b2.local_to_world(self.local2.0, self.local2.1);
+            (
+                (w1x - b1.p_x, w1y - b1.p_y),
+                (w2x - b2.p_x, w2y - b2.p_y),
+                (w1x - w2x, w1y - w2y),
+                b1.inv_m,
+                b1.inv_i,
+                b2.inv_m,
+                b2.inv_i,
+            )
+        };
+        let e = err.0 * axis.0 + err.1 * axis.1;
+        if e == 0.0 {
+            return;
+        }
+        let a1 = r1.0 * axis.1 - r1.1 * axis.0;
+        let a2 = r2.0 * axis.1 - r2.1 * axis.0;
+        let im = im1 + im2 + ii1 * a1 * a1 + ii2 * a2 * a2;
+        if im <= 0.0 {
+            return;
+        }
+        let lambda = -e / im;
+        {
+            let b1 = &mut bodies.bodies[i1];
+            b1.p_x += lambda * axis.0 * im1;
+            b1.p_y += lambda * axis.1 * im1;
+            b1.theta += ii1 * (r1.0 * lambda * axis.1 - r1.1 * lambda * axis.0);
+        }
+        {
+            let b2 = &mut bodies.bodies[i2];
+            b2.p_x -= lambda * axis.0 * im2;
+            b2.p_y -= lambda * axis.1 * im2;
+            b2.theta -= ii2 * (r2.0 * lambda * axis.1 - r2.1 * lambda * axis.0);
+        }
+    }
 }
 
 impl Constraint for LinkConstraint {
@@ -361,6 +450,11 @@ impl Constraint for LinkConstraint {
 
     fn reaction(&self) -> f64 {
         self.impulse
+    }
+
+    fn project(&mut self, bodies: &mut BodySet) {
+        self.project_axis(bodies, (1.0, 0.0));
+        self.project_axis(bodies, (0.0, 1.0));
     }
 }
 
@@ -583,10 +677,7 @@ impl RigidBodySystem {
         let n_gen = self.force_generators.len();
         for i in 0..n_gen {
             // SAFETY: swap out generator temporarily to avoid double borrow of self
-            let mut gen = std::mem::replace(
-                &mut self.force_generators[i],
-                Box::new(NoopForce),
-            );
+            let mut gen = std::mem::replace(&mut self.force_generators[i], Box::new(NoopForce));
             gen.apply(&mut self.bodies);
             self.force_generators[i] = gen;
         }
@@ -607,10 +698,12 @@ impl RigidBodySystem {
             c.prepare(&self.bodies, dt);
         }
 
-        // Iterations
+        // Iterations (speed sources first, then geometry)
+        let mut order: Vec<usize> = (0..self.constraints.len()).collect();
+        order.sort_by_key(|&i| self.constraints[i].solver_priority());
         for _ in 0..self.iterations {
-            for c in &mut self.constraints {
-                c.solve(&mut self.bodies);
+            for &ci in &order {
+                self.constraints[ci].solve(&mut self.bodies);
             }
         }
 
@@ -619,6 +712,14 @@ impl RigidBodySystem {
             b.p_x += b.v_x * dt;
             b.p_y += b.v_y * dt;
             b.theta += b.v_theta * dt;
+        }
+
+        // Position projection removes the geometric drift the velocity-level
+        // impulses leave at high angular rates.
+        for _ in 0..PROJECTION_ITERATIONS {
+            for &ci in &order {
+                self.constraints[ci].project(&mut self.bodies);
+            }
         }
     }
 
@@ -727,8 +828,11 @@ mod tests {
         b.p_x = 1.0;
         let bi = sys.add_body(b);
 
+        // Offset local points: world points coincide while the centers stay
+        // 1.0 apart, which is the actual engine linkage configuration.
         let mut link = LinkConstraint::new(ai, bi);
-        link.local2 = (0.0, 0.0);
+        link.local1 = (0.5, 0.0);
+        link.local2 = (-0.5, 0.0);
         sys.add_constraint(Box::new(link));
 
         // Pull body B

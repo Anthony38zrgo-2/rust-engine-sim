@@ -175,6 +175,9 @@ pub struct ExhaustParams {
     pub audio_volume: f64,
     /// Path to impulse response WAV (relative to assets)
     pub impulse_response: Option<String>,
+    pub header_loss_gain: f64,
+    pub collector_loss_gain: f64,
+    pub exhaust_output_gain: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +216,18 @@ impl ExhaustSystem {
 
     pub fn audio_volume(&self) -> f64 {
         self.params.audio_volume
+    }
+
+    pub fn header_loss_gain(&self) -> f64 {
+        self.params.header_loss_gain
+    }
+
+    pub fn collector_loss_gain(&self) -> f64 {
+        self.params.collector_loss_gain
+    }
+
+    pub fn exhaust_output_gain(&self) -> f64 {
+        self.params.exhaust_output_gain
     }
 
     pub fn primary_flow_rate(&self) -> f64 {
@@ -292,6 +307,9 @@ mod tests {
                 velocity_decay: 1.0,
                 audio_volume: 1.0,
                 impulse_response: None,
+                header_loss_gain: 1.0,
+                collector_loss_gain: 1.0,
+                exhaust_output_gain: 1.0,
             },
         );
         let v0 = ex.system.volume();

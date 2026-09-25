@@ -15,10 +15,10 @@ use es_mechanics::{
     PistonParams,
 };
 use es_solver::{
-    BodySet, Constraint, FixedPositionConstraint, ForceGenerator, LinkConstraint, LineConstraint,
+    BodySet, Constraint, FixedPositionConstraint, ForceGenerator, LineConstraint, LinkConstraint,
     RigidBody, RigidBodySystem, RotationFrictionConstraint,
 };
-use es_units::{self as units, PI, rpm};
+use es_units::{self as units, rpm, PI};
 
 // ---------------------------------------------------------------------------
 // Speed-control constraint (starter / dyno)
@@ -99,11 +99,19 @@ impl Constraint for SpeedControlConstraint {
                 // Drive toward the (negative) target: negative impulses.
                 self.lo_impulse = if self.enabled { -max_impulse } else { 0.0 };
                 // Hold: brake back toward target with positive impulses.
-                self.hi_impulse = if self.hold && self.enabled { max_impulse } else { 0.0 };
+                self.hi_impulse = if self.hold && self.enabled {
+                    max_impulse
+                } else {
+                    0.0
+                };
             } else {
                 self.target = self.rotation_speed;
                 // Hold: brake back toward target with negative impulses.
-                self.lo_impulse = if self.hold && self.enabled { -max_impulse } else { 0.0 };
+                self.lo_impulse = if self.hold && self.enabled {
+                    -max_impulse
+                } else {
+                    0.0
+                };
                 // Drive toward the (positive) target: positive impulses.
                 self.hi_impulse = if self.enabled { max_impulse } else { 0.0 };
             }
@@ -155,6 +163,10 @@ impl Constraint for SpeedControlConstraint {
 
     fn set_rotation_speed(&mut self, speed: f64) {
         self.rotation_speed = speed;
+    }
+
+    fn solver_priority(&self) -> i32 {
+        -1
     }
 }
 
@@ -254,6 +266,25 @@ pub struct IgnitionConfig {
     pub limiter_duration: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct AudioPathParams {
+    pub equal_bank_delay: bool,
+    pub include_output_path_delay: bool,
+    pub listener_distance: f64,
+    pub speed_of_sound: f64,
+}
+
+impl Default for AudioPathParams {
+    fn default() -> Self {
+        Self {
+            equal_bank_delay: false,
+            include_output_path_delay: false,
+            listener_distance: 0.0,
+            speed_of_sound: 343.0,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Assembled engine
 // ---------------------------------------------------------------------------
@@ -289,10 +320,17 @@ pub struct Engine {
     exhaust_lobe: Vec<usize>,
 
     exhaust_flow_buffer: Vec<f64>,
+    audio_source: Vec<CylinderAudioSeries>,
+    audio_gain: Vec<f64>,
+    audio_last_base: Vec<f64>,
+    audio_last_flow: Vec<f64>,
+    collector_pressure: Vec<Vec<f64>>,
     /// Exhaust system index per cylinder (audio staging).
     exhaust_system_index: Vec<usize>,
-    /// Per-cylinder exhaust pulse delay (primary + system length / speed of sound).
+    /// Per-cylinder exhaust pulse delay (header propagation plus optional
+    /// output path and listener distance, divided by the speed of sound).
     exhaust_delay: Vec<DelayLine>,
+    exhaust_delay_s: Vec<f64>,
     time: f64,
 
     pub starter_enabled: bool,
@@ -367,6 +405,7 @@ pub struct EngineBuild {
     pub chamber_flow: Vec<(f64, f64, f64, f64, f64, f64)>,
     pub ignition: IgnitionConfig,
     pub fuel: es_combustion::Fuel,
+    pub audio_path: AudioPathParams,
     pub intake_cam_params: CamshaftParams,
     pub exhaust_cam_params: CamshaftParams,
     /// Intake lobe centerline in crank degrees relative to each cylinder's
@@ -532,8 +571,14 @@ impl Engine {
             let bank = &banks[cc.bank];
             let head = &heads[cc.bank];
             let piston = &pistons[i];
-            let (runner_flow_k, primary_flow_k, runner_length, primary_length, intake_cs, exhaust_cs) =
-                b.chamber_flow[i];
+            let (
+                runner_flow_k,
+                primary_flow_k,
+                runner_length,
+                primary_length,
+                intake_cs,
+                exhaust_cs,
+            ) = b.chamber_flow[i];
             let refs = ChamberRefs {
                 bank,
                 head,
@@ -599,7 +644,11 @@ impl Engine {
         }
         // Wire exhaust systems / headers onto heads
         for (i, head) in heads.iter_mut().enumerate() {
-            let default_sys = if n_exhausts == 0 { 0 } else { i.min(n_exhausts - 1) };
+            let default_sys = if n_exhausts == 0 {
+                0
+            } else {
+                i.min(n_exhausts - 1)
+            };
             head.set_all_exhaust_systems(default_sys);
             if let Some(&(sys, primary_m)) = b.bank_exhaust.get(i) {
                 head.set_all_exhaust_systems(sys);
@@ -655,21 +704,48 @@ impl Engine {
 
         let exhaust_flow_buffer = vec![0.0; exhausts.len()];
 
-        // Audio staging: per-cylinder exhaust system index and pulse delay
-        // (reference `m_delayFilters`, delay = header + system length / 343 m/s).
+        // Audio staging: per-cylinder exhaust system index and pulse delay.
+        // The acoustic phase uses primary/header propagation only; the output
+        // path length is not applied as a pure delay unless explicitly enabled.
         let n_cyl = pistons.len();
         let mut exhaust_system_index = Vec::with_capacity(n_cyl);
         let mut exhaust_delay = Vec::with_capacity(n_cyl);
         let delay_rate = meta.simulation_frequency;
+        let speed_of_sound = b.audio_path.speed_of_sound.max(1.0);
+        let n_chambers = n_cyl.max(1) as f64;
+        let mut delays = Vec::with_capacity(n_cyl);
+        let mut audio_gain = Vec::with_capacity(n_cyl);
         for piston in &pistons {
             let bank_idx = piston.bank;
             let bank_cyl = piston.cylinder_index;
             let head = &heads[bank_idx];
             let ex_idx = head.exhaust_system(bank_cyl).unwrap_or(0);
-            let length = head.header_primary_length(bank_cyl) + exhausts[ex_idx].length();
+            let exhaust = &exhausts[ex_idx];
+            let mut delay_s = head.header_primary_length(bank_cyl) / speed_of_sound;
+            if b.audio_path.include_output_path_delay {
+                delay_s += exhaust.length() / speed_of_sound;
+            }
+            delay_s += b.audio_path.listener_distance / speed_of_sound;
+            let losses = exhaust.header_loss_gain()
+                * exhaust.collector_loss_gain()
+                * exhaust.exhaust_output_gain();
+            audio_gain.push(
+                head.sound_attenuation(bank_cyl) * exhaust.audio_volume() / n_chambers * losses,
+            );
             exhaust_system_index.push(ex_idx);
-            exhaust_delay.push(DelayLine::new(length / 343.0, delay_rate));
+            delays.push(delay_s);
         }
+        if b.audio_path.equal_bank_delay {
+            let max_delay = delays.iter().cloned().fold(0.0, f64::max);
+            for d in &mut delays {
+                *d = max_delay;
+            }
+        }
+        for d in &delays {
+            exhaust_delay.push(DelayLine::new(*d, delay_rate));
+        }
+        let exhaust_delay_s = delays;
+        let n_exhausts = exhausts.len().max(1);
 
         Self {
             meta,
@@ -698,8 +774,14 @@ impl Engine {
             intake_lobe,
             exhaust_lobe,
             exhaust_flow_buffer,
+            audio_source: (0..n_cyl).map(|_| CylinderAudioSeries::default()).collect(),
+            audio_gain,
+            audio_last_base: vec![0.0; n_cyl],
+            audio_last_flow: vec![0.0; n_cyl],
+            collector_pressure: vec![Vec::new(); n_exhausts],
             exhaust_system_index,
             exhaust_delay,
+            exhaust_delay_s,
             time: 0.0,
             starter_enabled: false,
             dyno_enabled: false,
@@ -714,6 +796,20 @@ impl Engine {
 
     pub fn omega(&self) -> f64 {
         self.crankshafts[0].body.v_theta
+    }
+
+    pub fn cylinder_exhaust_system(&self, i: usize) -> usize {
+        self.exhaust_system_index[i]
+    }
+
+    pub fn cylinder_primary_length(&self, i: usize) -> f64 {
+        let bank = self.pistons[i].bank;
+        let cyl = self.pistons[i].cylinder_index;
+        self.heads[bank].header_primary_length(cyl)
+    }
+
+    pub fn cylinder_delay_seconds(&self, i: usize) -> f64 {
+        self.exhaust_delay_s[i]
     }
 
     /// Intake and exhaust valve lift for cylinder `j` at crank angle (radians).
@@ -767,10 +863,7 @@ impl Engine {
             let (lx, ly) = journal_local;
             // NOTE: f64::sin_cos returns (sin, cos).
             let (s, c) = theta.sin_cos();
-            (
-                crank_pos.0 + c * lx - s * ly,
-                crank_pos.1 + s * lx + c * ly,
-            )
+            (crank_pos.0 + c * lx - s * ly, crank_pos.1 + s * lx + c * ly)
         };
 
         let a = bank.dx() * bank.dx() + bank.dy() * bank.dy();
@@ -922,7 +1015,8 @@ impl Engine {
         let bank_cyl = self.pistons[j].cylinder_index;
 
         let intake_lift = self.cams[self.intake_cam].valve_lift(self.intake_lobe[j], crank_angle);
-        let exhaust_lift = self.cams[self.exhaust_cam].valve_lift(self.exhaust_lobe[j], crank_angle);
+        let exhaust_lift =
+            self.cams[self.exhaust_cam].valve_lift(self.exhaust_lobe[j], crank_angle);
 
         let fuel = self.fuel.clone();
         let bank = self.banks[bank_idx].clone();
@@ -966,31 +1060,41 @@ impl Engine {
         for x in &mut self.exhaust_flow_buffer {
             *x = 0.0;
         }
-        let n = self.chambers.len().max(1) as f64;
         let omega = self.omega();
         for i in 0..self.chambers.len() {
-            let bank_idx = self.pistons[i].bank;
-            let bank_cyl = self.pistons[i].cylinder_index;
-            let head = &self.heads[bank_idx];
             let ex_idx = self.exhaust_system_index[i];
             let chamber = &self.chambers[i];
-            let exhaust = &self.exhausts[ex_idx];
-            let primary_len = head.header_primary_length(bank_cyl);
-            let exhaust_len = primary_len + exhaust.length();
             let attenuation = (omega.abs() / 40.0).min(1.0);
             let attenuation_3 = attenuation * attenuation * attenuation;
             let atm = units::ATM;
             let dyn_p = chamber.exhaust_runner_dynamic_pressure(1.0, 0.0)
                 + chamber.exhaust_runner_dynamic_pressure(-1.0, 0.0);
-            let exhaust_flow =
-                attenuation_3 * 1600.0 * ((chamber.exhaust_runner_pressure() - atm) + 0.1 * dyn_p);
-            let att = head.sound_attenuation(bank_cyl);
-            let vol = exhaust.audio_volume();
-            let len2 = (exhaust_len * exhaust_len).max(1e-9);
-            let pulse = att * (vol * exhaust_flow / n) * (1.0 / len2);
-            // Delay is linear, so scaling before or after is equivalent.
+            let base = chamber.exhaust_runner_pressure() - atm;
+            let intake = chamber.intake_runner.pressure() - atm;
+            let flow = chamber.last_exhaust_flow();
+            let runner_temp = chamber.exhaust_runner.temperature();
+            let derivative = base - self.audio_last_base[i];
+            let blowdown = flow - self.audio_last_flow[i];
+            self.audio_last_base[i] = base;
+            self.audio_last_flow[i] = flow;
+            let att3 = attenuation_3 * 1600.0;
+            {
+                let src = &mut self.audio_source[i];
+                src.base.push(base);
+                src.dyn_p.push(dyn_p);
+                src.att3.push(att3);
+                src.intake.push(intake);
+                src.derivative.push(derivative);
+                src.blowdown.push(blowdown);
+                src.flow.push(flow);
+                src.runner_temp.push(runner_temp);
+            }
+            let pulse = self.audio_gain[i] * att3 * (base + 0.1 * dyn_p);
             let delayed = self.exhaust_delay[i].process(pulse);
             self.exhaust_flow_buffer[ex_idx] += delayed;
+        }
+        for (ex, series) in self.collector_pressure.iter_mut().enumerate() {
+            series.push(self.exhausts[ex].system.pressure() - units::ATM);
         }
     }
 }
@@ -1080,10 +1184,29 @@ pub struct ScenarioEvent {
 // Offline run loop
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Default)]
+pub struct CylinderAudioSeries {
+    pub base: Vec<f64>,
+    pub dyn_p: Vec<f64>,
+    pub att3: Vec<f64>,
+    pub intake: Vec<f64>,
+    pub derivative: Vec<f64>,
+    pub blowdown: Vec<f64>,
+    pub flow: Vec<f64>,
+    pub runner_temp: Vec<f64>,
+}
+
 pub struct SimOutput {
     pub rpm: Vec<f64>,
     pub exhaust_pressure: Vec<f64>,
     pub audio_channels: Vec<Vec<f64>>,
+    pub cylinder_audio: Vec<CylinderAudioSeries>,
+    pub cylinder_delay_s: Vec<f64>,
+    pub cylinder_audio_gain: Vec<f64>,
+    pub cylinder_exhaust: Vec<usize>,
+    pub cylinder_bank: Vec<usize>,
+    pub cylinder_primary_length: Vec<f64>,
+    pub collector_pressure: Vec<Vec<f64>>,
     pub sample_rate: f64,
 }
 
@@ -1113,6 +1236,19 @@ impl Engine {
         self.place_cylinders();
         self.ignition.reset(self.crankshafts[0].cycle_angle());
         self.ignition.enabled = true;
+        for src in &mut self.audio_source {
+            src.base.reserve(steps);
+            src.dyn_p.reserve(steps);
+            src.att3.reserve(steps);
+            src.intake.reserve(steps);
+            src.derivative.reserve(steps);
+            src.blowdown.reserve(steps);
+            src.flow.reserve(steps);
+            src.runner_temp.reserve(steps);
+        }
+        for series in &mut self.collector_pressure {
+            series.reserve(steps);
+        }
 
         let mut ev_i = 0;
         for step in 0..steps {
@@ -1135,7 +1271,11 @@ impl Engine {
             self.step(dt);
 
             rpm_series.push(self.rpm());
-            let mean_p: f64 = self.exhausts.iter().map(|e| e.system.pressure()).sum::<f64>()
+            let mean_p: f64 = self
+                .exhausts
+                .iter()
+                .map(|e| e.system.pressure())
+                .sum::<f64>()
                 / self.exhausts.len().max(1) as f64;
             p_series.push(mean_p);
             for (ch, sample) in audio.iter_mut().zip(self.exhaust_flow_buffer.iter()) {
@@ -1147,6 +1287,17 @@ impl Engine {
             rpm: rpm_series,
             exhaust_pressure: p_series,
             audio_channels: audio,
+            cylinder_audio: std::mem::take(&mut self.audio_source),
+            cylinder_delay_s: self.exhaust_delay_s.clone(),
+            cylinder_audio_gain: self.audio_gain.clone(),
+            cylinder_exhaust: self.exhaust_system_index.clone(),
+            cylinder_bank: (0..self.pistons.len())
+                .map(|i| self.pistons[i].bank)
+                .collect(),
+            cylinder_primary_length: (0..self.pistons.len())
+                .map(|i| self.cylinder_primary_length(i))
+                .collect(),
+            collector_pressure: std::mem::take(&mut self.collector_pressure),
             sample_rate: fs,
         }
     }
@@ -1250,6 +1401,9 @@ mod tests {
                 velocity_decay: 1.0,
                 audio_volume: 1.0,
                 impulse_response: None,
+                header_loss_gain: 1.0,
+                collector_loss_gain: 1.0,
+                exhaust_output_gain: 1.0,
             }],
             heads: vec![CylinderHeadParams {
                 bank: 0,
@@ -1273,6 +1427,7 @@ mod tests {
                 limiter_duration: 0.05,
             },
             fuel: es_combustion::default_fuel(),
+            audio_path: AudioPathParams::default(),
             intake_cam_params: CamshaftParams {
                 lobes: 1,
                 advance: 0.0,
@@ -1307,6 +1462,56 @@ mod tests {
     }
 
     #[test]
+    fn mechanism_stays_bounded_at_speed() {
+        let mut e = single_cylinder_engine();
+        let events = vec![ScenarioEvent {
+            time: 0.0,
+            event: Event::SetStarter(true),
+        }];
+        let out = e.run_offline(5.0, &events);
+        assert!(out.rpm.iter().all(|r| r.is_finite() && *r < 1000.0));
+        let rod = e.rods[0].length();
+        let throw = e.crankshafts[0].throw();
+        let max_norm = rod + throw + 0.01;
+        for (i, p) in e.pistons.iter().enumerate() {
+            let norm = (p.body.p_x * p.body.p_x + p.body.p_y * p.body.p_y).sqrt();
+            assert!(
+                norm <= max_norm,
+                "piston {i} drifted outside linkage: norm={norm} max={max_norm}"
+            );
+        }
+    }
+
+    #[test]
+    fn mechanism_stays_bounded_at_high_rpm() {
+        let mut e = single_cylinder_engine();
+        e.meta.simulation_frequency = 20_000.0;
+        let events = vec![
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDyno(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDynoSpeed(rpm(15_000.0)),
+            },
+        ];
+        let out = e.run_offline(3.0, &events);
+        let last = *out.rpm.last().unwrap();
+        assert!(last > 14_000.0, "dyno did not hold high rpm: {last}");
+        let rod = e.rods[0].length();
+        let throw = e.crankshafts[0].throw();
+        let max_norm = rod + throw + 0.01;
+        for (i, p) in e.pistons.iter().enumerate() {
+            let norm = (p.body.p_x * p.body.p_x + p.body.p_y * p.body.p_y).sqrt();
+            assert!(
+                norm <= max_norm,
+                "piston {i} drifted at high rpm: norm={norm} max={max_norm}"
+            );
+        }
+    }
+
+    #[test]
     fn engine_builds_and_places() {
         let mut e = single_cylinder_engine();
         e.place_cylinders();
@@ -1324,9 +1529,18 @@ mod tests {
     fn starter_spins_engine() {
         let mut e = single_cylinder_engine();
         let events = vec![
-            ScenarioEvent { time: 0.0, event: Event::SetStarter(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetIgnition(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetThrottle(0.15) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetStarter(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetIgnition(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetThrottle(0.15),
+            },
         ];
         let out = e.run_offline(0.5, &events);
         let last_rpm = *out.rpm.last().unwrap();
@@ -1347,9 +1561,18 @@ mod tests {
     fn dyno_drives_to_target_speed() {
         let mut e = single_cylinder_engine();
         let events = vec![
-            ScenarioEvent { time: 0.0, event: Event::SetDyno(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetDynoSpeed(rpm(2000.0)) },
-            ScenarioEvent { time: 0.0, event: Event::SetDynoHold(false) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDyno(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDynoSpeed(rpm(2000.0)),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDynoHold(false),
+            },
         ];
         let out = e.run_offline(0.6, &events);
         let last = *out.rpm.last().unwrap();
@@ -1363,19 +1586,31 @@ mod tests {
     fn dyno_hold_brakes_overspeed() {
         let mut e = single_cylinder_engine();
         let events = vec![
-            ScenarioEvent { time: 0.0, event: Event::SetDyno(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetDynoSpeed(rpm(3000.0)) },
-            ScenarioEvent { time: 0.0, event: Event::SetDynoHold(false) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDyno(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDynoSpeed(rpm(3000.0)),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetDynoHold(false),
+            },
             // Slow the target down with `hold` enabled: the dyno must brake.
-            ScenarioEvent { time: 0.4, event: Event::SetDynoSpeed(rpm(1500.0)) },
-            ScenarioEvent { time: 0.4, event: Event::SetDynoHold(true) },
+            ScenarioEvent {
+                time: 0.4,
+                event: Event::SetDynoSpeed(rpm(1500.0)),
+            },
+            ScenarioEvent {
+                time: 0.4,
+                event: Event::SetDynoHold(true),
+            },
         ];
         let out = e.run_offline(1.0, &events);
         let last = *out.rpm.last().unwrap();
-        assert!(
-            last < 2000.0,
-            "dyno hold failed to brake: {last} rpm"
-        );
+        assert!(last < 2000.0, "dyno hold failed to brake: {last} rpm");
         assert!(
             (last - 1500.0).abs() < 250.0,
             "dyno hold did not settle near target: {last} rpm"
@@ -1386,10 +1621,19 @@ mod tests {
     fn ignition_disabled_prevents_combustion() {
         let mut e = single_cylinder_engine();
         let events = vec![
-            ScenarioEvent { time: 0.0, event: Event::SetStarter(true) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetStarter(true),
+            },
             // Explicitly OFF: `step()` must not re-enable it.
-            ScenarioEvent { time: 0.0, event: Event::SetIgnition(false) },
-            ScenarioEvent { time: 0.0, event: Event::SetThrottle(0.15) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetIgnition(false),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetThrottle(0.15),
+            },
         ];
         e.run_offline(0.3, &events);
         let burnt: f64 = e.chambers.iter().map(|c| c.n_burnt_fuel).sum();
@@ -1400,10 +1644,22 @@ mod tests {
     fn full_throttle_combusts_and_revs() {
         let mut e = single_cylinder_engine();
         let events = vec![
-            ScenarioEvent { time: 0.0, event: Event::SetStarter(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetIgnition(true) },
-            ScenarioEvent { time: 0.0, event: Event::SetThrottle(1.0) }, // wide open
-            ScenarioEvent { time: 0.5, event: Event::SetStarter(false) },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetStarter(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetIgnition(true),
+            },
+            ScenarioEvent {
+                time: 0.0,
+                event: Event::SetThrottle(1.0),
+            }, // wide open
+            ScenarioEvent {
+                time: 0.5,
+                event: Event::SetStarter(false),
+            },
         ];
         let out = e.run_offline(2.0, &events);
         let max_rpm = out.rpm.iter().cloned().fold(0.0, f64::max);

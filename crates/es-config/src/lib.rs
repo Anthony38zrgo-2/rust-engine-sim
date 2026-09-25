@@ -2,13 +2,12 @@
 //!
 //! Suffix conventions: `_mm`, `_rpm`, `_deg`, `_nm`, `_cc`, `_kg`, `_m`.
 
-use es_combustion::{
-    default_turbulence_to_flame_speed_ratio, Fuel, FuelParams,
-};
+use es_combustion::{default_turbulence_to_flame_speed_ratio, Fuel, FuelParams};
 use es_function::{harmonic_lobe_profile, Function, Interpolation};
 use es_mechanics::{CamshaftParams, CylinderHeadParams};
 use es_sim::{
-    BankConfig, CrankConfig, CylinderConfig, EngineBuild, EngineMeta, IgnitionConfig,
+    AudioPathParams, BankConfig, CrankConfig, CylinderConfig, EngineBuild, EngineMeta,
+    IgnitionConfig,
 };
 use es_units::{self as units, rpm};
 use serde::{Deserialize, Serialize};
@@ -323,8 +322,8 @@ pub struct ExhaustFile {
     pub collector_cross_section_cm2: f64,
     #[serde(default = "d_flow_k")]
     pub outlet_flow_k: f64,
-    #[serde(default = "d_primary_mm")]
-    pub primary_tube_length_mm: f64,
+    #[serde(default)]
+    pub primary_tube_length_mm: Option<f64>,
     #[serde(default = "d_flow_k")]
     pub primary_flow_k: f64,
     #[serde(default = "d_ex_decay")]
@@ -337,6 +336,16 @@ pub struct ExhaustFile {
     /// Impulse-response amplitude scale (reference IR library uses ~0.001–0.01).
     #[serde(default = "d_ir_volume")]
     pub impulse_response_volume: f64,
+    #[serde(default = "d_unity_gain")]
+    pub header_loss_gain: f64,
+    #[serde(default = "d_unity_gain")]
+    pub collector_loss_gain: f64,
+    #[serde(default = "d_unity_gain")]
+    pub exhaust_output_gain: f64,
+}
+
+fn d_unity_gain() -> f64 {
+    1.0
 }
 
 fn d_ir_volume() -> f64 {
@@ -365,12 +374,15 @@ impl Default for ExhaustFile {
             length_mm: d_ex_length_mm(),
             collector_cross_section_cm2: d_ex_cs_cm2(),
             outlet_flow_k: d_flow_k(),
-            primary_tube_length_mm: d_primary_mm(),
+            primary_tube_length_mm: Some(d_primary_mm()),
             primary_flow_k: d_flow_k(),
             velocity_decay: d_ex_decay(),
             audio_volume: d_audio_vol(),
             impulse_response: None,
             impulse_response_volume: d_ir_volume(),
+            header_loss_gain: d_unity_gain(),
+            collector_loss_gain: d_unity_gain(),
+            exhaust_output_gain: d_unity_gain(),
         }
     }
 }
@@ -543,9 +555,74 @@ impl Default for ScenarioFile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SceneFile {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub engine_air_gain: Option<f32>,
+    #[serde(default)]
+    pub engine_cover_gain: Option<f32>,
+    #[serde(default)]
+    pub mount_monocoque_gain: Option<f32>,
+    #[serde(default)]
+    pub cylinder_gain: Option<f32>,
+    #[serde(default)]
+    pub dry_low_gain: Option<f32>,
+    #[serde(default)]
+    pub dry_mid_gain: Option<f32>,
+    #[serde(default)]
+    pub dry_high_gain: Option<f32>,
+    #[serde(default)]
+    pub output_gain: Option<f32>,
+    #[serde(default)]
+    pub air_high_tilt_db: Option<f32>,
+    #[serde(default)]
+    pub air_direct_gain: Option<f32>,
+    #[serde(default)]
+    pub cover_radiation_lowpass_hz: Option<f32>,
+    #[serde(default)]
+    pub high_rpm_start: Option<f32>,
+    #[serde(default)]
+    pub high_rpm_span: Option<f32>,
+    #[serde(default)]
+    pub load: Option<f32>,
+    #[serde(default)]
+    pub throttle: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HeaderWaveguideFile {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub reflection: Option<f64>,
+    #[serde(default)]
+    pub temperature_dependent: Option<bool>,
+    #[serde(default)]
+    pub excitation_gain: Option<f64>,
+    #[serde(default)]
+    pub header_gain: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResonanceFile {
+    pub frequency_hz: f64,
+    #[serde(default = "d_resonance_q")]
+    pub q: f64,
+    #[serde(default)]
+    pub gain_db: f64,
+}
+
+fn d_resonance_q() -> f64 {
+    2.0
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AudioFile {
     #[serde(default = "d_audio_rate")]
     pub sample_rate: f64,
+    #[serde(default)]
+    pub acoustic_sample_rate: Option<f64>,
     #[serde(default = "d_out_path")]
     pub output: String,
     #[serde(default)]
@@ -554,20 +631,58 @@ pub struct AudioFile {
     pub convolution: f32,
     #[serde(default = "d_dff")]
     pub d_f_f_mix: f32,
+    #[serde(default)]
+    pub hf_mix: Option<f32>,
+    #[serde(default)]
+    pub hf_reference_hz: Option<f32>,
     #[serde(default = "d_jitter")]
     pub input_sample_noise: f32,
     #[serde(default = "d_air")]
     pub air_noise: f32,
     #[serde(default = "d_air_fc")]
     pub air_noise_frequency_cutoff: f32,
+    #[serde(default)]
+    pub flow_noise: Option<f32>,
+    #[serde(default)]
+    pub flow_noise_frequency_cutoff: Option<f32>,
+    #[serde(default)]
+    pub mechanical_noise: Option<f32>,
+    #[serde(default)]
+    pub mechanical_noise_frequency_cutoff: Option<f32>,
     #[serde(default = "d_input_antialias_fc")]
     pub input_antialias_frequency_cutoff: f32,
     #[serde(default = "d_in_fc")]
     pub input_sample_noise_frequency_cutoff: f32,
     #[serde(default)]
+    pub leveler_enabled: Option<bool>,
+    #[serde(default)]
     pub leveler_target: Option<f32>,
     #[serde(default)]
     pub leveler_max_gain: Option<f32>,
+    #[serde(default)]
+    pub leveler_attack: Option<f32>,
+    #[serde(default)]
+    pub leveler_release: Option<f32>,
+    #[serde(default)]
+    pub normalize_peak_dbfs: Option<f32>,
+    #[serde(default)]
+    pub intake_gain: Option<f64>,
+    #[serde(default)]
+    pub resonances: Vec<ResonanceFile>,
+    #[serde(default)]
+    pub scene: Option<SceneFile>,
+    #[serde(default)]
+    pub bank_gain: Option<[f64; 2]>,
+    #[serde(default)]
+    pub header_waveguide: Option<HeaderWaveguideFile>,
+    #[serde(default)]
+    pub equal_bank_delay: bool,
+    #[serde(default)]
+    pub include_output_path_delay: bool,
+    #[serde(default)]
+    pub listener_distance_m: f64,
+    #[serde(default = "d_speed_of_sound")]
+    pub speed_of_sound: f64,
 }
 
 fn d_audio_rate() -> f64 {
@@ -597,22 +712,45 @@ fn d_input_antialias_fc() -> f32 {
 fn d_in_fc() -> f32 {
     10_000.0
 }
+fn d_speed_of_sound() -> f64 {
+    343.0
+}
 
 impl Default for AudioFile {
     fn default() -> Self {
         Self {
             sample_rate: d_audio_rate(),
+            acoustic_sample_rate: None,
             output: d_out_path(),
             volume: 1.0,
             convolution: d_conv(),
             d_f_f_mix: d_dff(),
+            hf_mix: None,
+            hf_reference_hz: None,
             input_sample_noise: d_jitter(),
             air_noise: d_air(),
             air_noise_frequency_cutoff: d_air_fc(),
+            flow_noise: None,
+            flow_noise_frequency_cutoff: None,
+            mechanical_noise: None,
+            mechanical_noise_frequency_cutoff: None,
             input_antialias_frequency_cutoff: d_input_antialias_fc(),
             input_sample_noise_frequency_cutoff: d_in_fc(),
+            leveler_enabled: None,
             leveler_target: None,
             leveler_max_gain: None,
+            leveler_attack: None,
+            leveler_release: None,
+            normalize_peak_dbfs: None,
+            intake_gain: None,
+            resonances: Vec::new(),
+            scene: None,
+            bank_gain: None,
+            header_waveguide: None,
+            equal_bank_delay: false,
+            include_output_path_delay: false,
+            listener_distance_m: 0.0,
+            speed_of_sound: d_speed_of_sound(),
         }
     }
 }
@@ -719,10 +857,7 @@ impl EngineFile {
             .banks
             .iter()
             .map(|b| {
-                let deck = b
-                    .deck_height_mm
-                    .map(units::mm)
-                    .unwrap_or(default_deck);
+                let deck = b.deck_height_mm.map(units::mm).unwrap_or(default_deck);
                 BankConfig {
                     angle: units::deg(b.angle_deg),
                     bore: units::mm(b.bore_mm),
@@ -805,13 +940,54 @@ impl EngineFile {
         let head_by_bank: std::collections::HashMap<usize, &CylinderHeadParams> =
             heads.iter().map(|h| (h.bank, h)).collect();
 
+        let head_cylinder_primary_mm: std::collections::HashMap<usize, Vec<f64>> = self
+            .heads
+            .iter()
+            .map(|h| {
+                let v = if h.cylinder_primary_mm.len() == h.cylinder_count {
+                    h.cylinder_primary_mm
+                        .iter()
+                        .map(|&m| units::mm(m))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (h.bank, v)
+            })
+            .collect();
+
+        let bank_primary: Vec<f64> = self
+            .banks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let sys = b
+                    .exhaust_system
+                    .unwrap_or(i.min(self.exhausts.len().saturating_sub(1)));
+                self.exhausts
+                    .get(sys)
+                    .and_then(|e| e.primary_tube_length_mm)
+                    .map(units::mm)
+                    .or_else(|| {
+                        if b.primary_length_mm > 0.0 {
+                            Some(units::mm(b.primary_length_mm))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| units::mm(d_primary_mm()))
+            })
+            .collect();
+
         let bank_exhaust: Vec<(usize, f64)> = self
             .banks
             .iter()
             .enumerate()
             .map(|(i, b)| {
-                let sys = b.exhaust_system.unwrap_or(i.min(self.exhausts.len().saturating_sub(1)));
-                (sys, units::mm(b.primary_length_mm))
+                let sys = b
+                    .exhaust_system
+                    .unwrap_or(i.min(self.exhausts.len().saturating_sub(1)));
+                (sys, bank_primary[i])
             })
             .collect();
 
@@ -827,11 +1003,18 @@ impl EngineFile {
                 let intake_cs = head.intake_runner_cross_section;
                 let exhaust_cs = head.exhaust_runner_cross_section;
                 let runner_len = units::mm(self.intake.runner_length_mm.max(1.0));
-                let (sys, _) = bank_exhaust.get(c.bank).copied().unwrap_or((0, 0.0));
+                let base_primary = bank_primary
+                    .get(c.bank)
+                    .copied()
+                    .unwrap_or_else(|| units::mm(d_primary_mm()));
+                let primary_len = head_cylinder_primary_mm
+                    .get(&c.bank)
+                    .and_then(|v| v.get(c.bank_cylinder))
+                    .copied()
+                    .filter(|m| *m > 0.0)
+                    .unwrap_or(base_primary);
+                let sys = bank_exhaust.get(c.bank).map(|&(s, _)| s).unwrap_or(0);
                 let ex = self.exhausts.get(sys).or_else(|| self.exhausts.first());
-                let primary_len = ex
-                    .map(|e| units::mm(e.primary_tube_length_mm))
-                    .unwrap_or(0.3);
                 let primary_flow_k = ex.map(|e| e.primary_flow_k).unwrap_or_else(d_flow_k);
                 (
                     self.intake.runner_flow_k,
@@ -880,8 +1063,7 @@ impl EngineFile {
         );
 
         let n_cyl = self.cylinders.len();
-        let cam_assignment: Vec<(usize, usize, usize)> =
-            (0..n_cyl).map(|i| (i, i, i)).collect();
+        let cam_assignment: Vec<(usize, usize, usize)> = (0..n_cyl).map(|i| (i, i, i)).collect();
 
         let intake_cam_params = CamshaftParams {
             lobes: n_cyl,
@@ -913,10 +1095,7 @@ impl EngineFile {
             max_burning_efficiency: self.fuel.max_burning_efficiency,
             max_turbulence_effect: self.fuel.max_turbulence_effect,
             max_dilution_effect: self.fuel.max_dilution_effect,
-            turbulence_to_flame_speed_ratio: if self
-                .fuel
-                .turbulence_to_flame_speed_ratio
-                .is_empty()
+            turbulence_to_flame_speed_ratio: if self.fuel.turbulence_to_flame_speed_ratio.is_empty()
             {
                 default_turbulence_to_flame_speed_ratio()
             } else {
@@ -950,24 +1129,6 @@ impl EngineFile {
         }
         let head_cylinder_exhaust = by_bank;
 
-        let head_cylinder_primary_mm: Vec<Vec<f64>> = self
-            .heads
-            .iter()
-            .map(|h| {
-                if h.cylinder_primary_mm.len() == h.cylinder_count {
-                    h.cylinder_primary_mm.iter().map(|&m| units::mm(m)).collect()
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
-        let mut head_cylinder_primary_mm = head_cylinder_primary_mm;
-        let mut by_bank_prim = std::collections::HashMap::new();
-        for (h, v) in self.heads.iter().zip(head_cylinder_primary_mm.drain(..)) {
-            by_bank_prim.insert(h.bank, v);
-        }
-        let head_cylinder_primary_mm = by_bank_prim;
-
         let head_cylinder_attenuation: Vec<Vec<f64>> = self
             .heads
             .iter()
@@ -986,7 +1147,7 @@ impl EngineFile {
         }
         let head_cylinder_attenuation = by_bank_att;
 
-let n_heads = heads.len();
+        let n_heads = heads.len();
 
         EngineBuild {
             meta,
@@ -999,6 +1160,12 @@ let n_heads = heads.len();
             chamber_flow,
             ignition,
             fuel,
+            audio_path: AudioPathParams {
+                equal_bank_delay: self.audio.equal_bank_delay,
+                include_output_path_delay: self.audio.include_output_path_delay,
+                listener_distance: self.audio.listener_distance_m,
+                speed_of_sound: self.audio.speed_of_sound,
+            },
             intake_cam_params,
             exhaust_cam_params,
             intake_centerline: units::deg(self.cams.intake_centerline_deg),
@@ -1018,10 +1185,20 @@ let n_heads = heads.len();
                 .map(|i| head_cylinder_exhaust.get(&i).cloned().unwrap_or_default())
                 .collect(),
             head_cylinder_primary_mm: (0..n_heads)
-                .map(|i| head_cylinder_primary_mm.get(&i).cloned().unwrap_or_default())
+                .map(|i| {
+                    head_cylinder_primary_mm
+                        .get(&i)
+                        .cloned()
+                        .unwrap_or_default()
+                })
                 .collect(),
             head_cylinder_attenuation: (0..n_heads)
-                .map(|i| head_cylinder_attenuation.get(&i).cloned().unwrap_or_default())
+                .map(|i| {
+                    head_cylinder_attenuation
+                        .get(&i)
+                        .cloned()
+                        .unwrap_or_default()
+                })
                 .collect(),
         }
     }
@@ -1049,11 +1226,14 @@ impl From<ExhaustFile> for es_intake_exhaust::ExhaustParams {
             length: units::mm(f.length_mm),
             collector_cross_section: f.collector_cross_section_cm2 * 1e-4,
             outlet_flow_rate: f.outlet_flow_k,
-            primary_tube_length: units::mm(f.primary_tube_length_mm),
+            primary_tube_length: units::mm(f.primary_tube_length_mm.unwrap_or_else(d_primary_mm)),
             primary_flow_rate: f.primary_flow_k,
             velocity_decay: f.velocity_decay,
             audio_volume: f.audio_volume,
             impulse_response: f.impulse_response,
+            header_loss_gain: f.header_loss_gain,
+            collector_loss_gain: f.collector_loss_gain,
+            exhaust_output_gain: f.exhaust_output_gain,
         }
     }
 }
@@ -1153,12 +1333,107 @@ mod tests {
         assert!((engine.heads[0].sound_attenuation(0) - 0.7).abs() < 1e-9);
 
         let events = vec![
-            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetStarter(true) },
-            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetIgnition(true) },
-            es_sim::ScenarioEvent { time: 0.0, event: es_sim::Event::SetThrottle(0.1) },
+            es_sim::ScenarioEvent {
+                time: 0.0,
+                event: es_sim::Event::SetStarter(true),
+            },
+            es_sim::ScenarioEvent {
+                time: 0.0,
+                event: es_sim::Event::SetIgnition(true),
+            },
+            es_sim::ScenarioEvent {
+                time: 0.0,
+                event: es_sim::Event::SetThrottle(0.1),
+            },
         ];
         let out = engine.run_offline(0.4, &events);
         assert!(out.rpm.iter().all(|r| r.is_finite()));
         assert!(!out.audio_channels[0].is_empty());
+    }
+
+    const PRIMARY_UNIFY_JSON: &str = r#"{
+        "name": "primary-unify-test",
+        "crank": {
+            "mass_kg": 5.0,
+            "flywheel_mass_kg": 2.0,
+            "moment_of_inertia_kg_m2": 0.2,
+            "stroke_mm": 86.0,
+            "tdc_deg": 0.0,
+            "friction_torque_nm": 4.0,
+            "rod_journals": 1,
+            "journal_angles_deg": [0.0]
+        },
+        "banks": [
+            {"angle_deg": 0.0, "bore_mm": 86.0, "exhaust_system": 0, "primary_length_mm": 40.0},
+            {"angle_deg": 0.0, "bore_mm": 86.0, "exhaust_system": 1, "primary_length_mm": 45.0}
+        ],
+        "cylinders": [
+            {"bank": 0, "bank_cylinder": 0, "rod_length_mm": 140.0, "compression_height_mm": 20.0},
+            {"bank": 1, "bank_cylinder": 0, "rod_length_mm": 140.0, "compression_height_mm": 20.0}
+        ],
+        "intake": {},
+        "exhausts": [
+            {"primary_tube_length_mm": 508.0},
+            {"primary_tube_length_mm": 508.0}
+        ],
+        "heads": [
+            {"bank": 0, "cylinder_count": 1},
+            {"bank": 1, "cylinder_count": 1}
+        ],
+        "ignition": {
+            "firing_order": [[0, 0.0], [1, 360.0]],
+            "timing_curve_rpm_deg": [[0, 0], [4000, 24]],
+            "rev_limit_rpm": 5500
+        }
+    }"#;
+
+    #[test]
+    fn exhaust_primary_feeds_gas_and_audio_identically() {
+        let f = load_str(PRIMARY_UNIFY_JSON).unwrap();
+        let build = f.to_build();
+        for (runner_flow, _primary_flow, _runner_len, primary, _ics, _ecs) in &build.chamber_flow {
+            assert!(
+                (*primary - 0.508).abs() < 1e-12,
+                "chamber_flow primary={primary}"
+            );
+            let _ = runner_flow;
+        }
+        for &(_, primary) in &build.bank_exhaust {
+            assert!(
+                (primary - 0.508).abs() < 1e-12,
+                "bank_exhaust primary={primary}"
+            );
+        }
+
+        let engine = es_sim::Engine::build(build);
+        for i in 0..engine.chambers.len() {
+            let primary = engine.cylinder_primary_length(i);
+            assert!((primary - 0.508).abs() < 1e-12, "audio primary={primary}");
+            let bank = engine.pistons[i].bank;
+            let head_vol = engine.heads[bank].exhaust_runner_volume();
+            let cs = engine.heads[bank].exhaust_runner_cross_section();
+            let tube_len = (engine.chambers[i].exhaust_runner.volume() - head_vol) / cs;
+            assert!(
+                (tube_len - primary).abs() < 1e-6,
+                "chamber tube_len={tube_len} primary={primary}"
+            );
+            let expected_delay = primary / 343.0;
+            assert!(
+                (engine.cylinder_delay_seconds(i) - expected_delay).abs() < 1e-12,
+                "delay={} expected={}",
+                engine.cylinder_delay_seconds(i),
+                expected_delay
+            );
+        }
+    }
+
+    #[test]
+    fn bank_primary_is_fallback_when_exhaust_length_absent() {
+        let json = PRIMARY_UNIFY_JSON
+            .replace("\"primary_tube_length_mm\": 508.0", "\"length_mm\": 1000.0");
+        let f = load_str(&json).unwrap();
+        let build = f.to_build();
+        assert!((build.bank_exhaust[0].1 - 0.040).abs() < 1e-12);
+        assert!((build.bank_exhaust[1].1 - 0.045).abs() < 1e-12);
     }
 }
