@@ -1,0 +1,49 @@
+{
+  "binary": "v10_render",
+  "entries": [
+    {
+      "name": "cli_5000rpm_procedural",
+      "wav_path": "tests/golden/cli/cli_5000rpm_procedural.wav",
+      "wav_sha256": "ca588ea1ca4bf92f97404b54bd0eafe778774fabb19cb33b97147f3173a1903a",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 24000,
+      "rms": 0.05757536561775918,
+      "peak": 0.17603077,
+      "finite": true
+    },
+    {
+      "name": "cli_coast_lift_schema2",
+      "wav_path": "tests/golden/cli/cli_coast_lift_schema2.wav",
+      "wav_sha256": "47465a0c362380d649067c78cf18c40496cb7bc3190e375e53a929feaa8d64cb",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 48000,
+      "rms": 0.05699303691831216,
+      "peak": 0.18958098,
+      "finite": true
+    },
+    {
+      "name": "cli_sample_only_schema1",
+      "wav_path": "tests/golden/cli/cli_sample_only_schema1.wav",
+      "wav_sha256": "4c888ca5e02ad0c9d7dc814f1fde7d5c894374f4089089b9f7f86ba14e16ab4c",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 38400,
+      "rms": 0.02218419218767104,
+      "peak": 0.0883816,
+      "finite": true
+    },
+    {
+      "name": "cli_sweep_shift_schema1",
+      "wav_path": "tests/golden/cli/cli_sweep_shift_schema1.wav",
+      "wav_sha256": "53c9c5c8ac67489e5498f5a63aac13901288c8498236c4ab61f3e785ea3a3abf",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 57600,
+      "rms": 0.0685276837175478,
+      "peak": 0.67723626,
+      "finite": true
+    }
+  ]
+}

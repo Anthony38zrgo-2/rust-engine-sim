@@ -1,0 +1,209 @@
+{
+  "baseline_crate": "references/v10-engine-synth",
+  "sample_rate": 48000,
+  "fixtures": {
+    "bank_schema1_manifest_sha256": "b900a03b625e9f3cdde901e516660d877c83b9b30d19588c84f1480e318bb27e",
+    "bank_schema2_manifest_sha256": "e8734ea20670e921f8b0d8065abfe8fdb5f74ebad4fb9b3766128e1ce00d81d6"
+  },
+  "scenarios": [
+    {
+      "name": "steady_5000rpm_engine",
+      "category": "engine_scene",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 48000,
+      "raw_f32_path": "tests/golden/raw/steady_5000rpm_engine.f32",
+      "raw_f32_sha256": "41823c8c23f2b362da75441711204a0bc3d1ea3b1c352f4e6ab2260498810447",
+      "wav_path": "tests/golden/wav/steady_5000rpm_engine.wav",
+      "wav_sha256": "d301759ea232a8161e997466931729b053a45c952b85d688628145c8a556f5a9",
+      "rms": 0.057421348540610664,
+      "peak": 0.17603406,
+      "dc_mean": 0.000044945866593934623,
+      "finite": true,
+      "extra": {
+        "engine_block_head_rms": 0.008286007177914823,
+        "engine_exhaust_rms": 0.0060908947034077395,
+        "engine_master_rms": 0.06916466703062327,
+        "engine_master_sha256": "f2d9b744d57e2fc64bbb0e284d7966f51604acdd6808e96c5c0c41eb183f3e32",
+        "engine_turbulence_rms": 0.003811464722108263,
+        "final_crank_phase_deg": 60.0,
+        "fired_events": 416,
+        "max_limiter_reduction_db": 0.0
+      }
+    },
+    {
+      "name": "steady_5000rpm_runtime_hybrid",
+      "category": "runtime_hybrid_schema1",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 48000,
+      "raw_f32_path": "tests/golden/raw/steady_5000rpm_runtime_hybrid.f32",
+      "raw_f32_sha256": "ade374c1dbfff599b98f1c986139cdff7a171f60bf7520f998c6529484cd7f97",
+      "wav_path": "tests/golden/wav/steady_5000rpm_runtime_hybrid.wav",
+      "wav_sha256": "bd41fa1068b51e20b41f488d819b6ea7af95fd4ba3e9a0466ad7fee3a59f5039",
+      "rms": 0.034391530423573846,
+      "peak": 0.11797297,
+      "dc_mean": 0.0003693605447145494,
+      "finite": true,
+      "extra": {
+        "stereo_left_equals_right": true
+      }
+    },
+    {
+      "name": "rpm_sweep_hybrid_schema1",
+      "category": "runtime_hybrid_schema1",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 72000,
+      "raw_f32_path": "tests/golden/raw/rpm_sweep_hybrid_schema1.f32",
+      "raw_f32_sha256": "614b944b091d5dbf5f316166ad13142f3d1759438cb504168453c1c34ed86c94",
+      "wav_path": "tests/golden/wav/rpm_sweep_hybrid_schema1.wav",
+      "wav_sha256": "52275e1de15489baa0a3fb9da854865bcd34daed188646409c1cd8266b37d1d6",
+      "rms": 0.06527386358645787,
+      "peak": 0.26368502,
+      "dc_mean": 0.00042858060441484724,
+      "finite": true,
+      "extra": {
+        "block_split_bit_identical": true
+      }
+    },
+    {
+      "name": "coast_lift_hybrid_schema2",
+      "category": "runtime_hybrid_schema2",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 72000,
+      "raw_f32_path": "tests/golden/raw/coast_lift_hybrid_schema2.f32",
+      "raw_f32_sha256": "6da6dda85675a2bc83ca62328556802a9ca0555ab17ed5743862da62496b4858",
+      "wav_path": "tests/golden/wav/coast_lift_hybrid_schema2.wav",
+      "wav_sha256": "3890c2872d0c94ba57f8bf891cb831bcb6a1da4ba1b3e8c81f1c0e76e25f3d25",
+      "rms": 0.07483480374243495,
+      "peak": 0.31366473,
+      "dc_mean": -0.0001778491307098496,
+      "finite": true,
+      "extra": {}
+    },
+    {
+      "name": "shift_up_down_hybrid",
+      "category": "runtime_shifts",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 76800,
+      "raw_f32_path": "tests/golden/raw/shift_up_down_hybrid.f32",
+      "raw_f32_sha256": "32b8db66f59bdecd4e14e9012d14833a8754057e63475bb9d94fb925fc9c6636",
+      "wav_path": "tests/golden/wav/shift_up_down_hybrid.wav",
+      "wav_sha256": "eaabad94f86e40042e8184ae22ce033cce8e86f9a13f5242735feea40c301a62",
+      "rms": 0.07237652435204688,
+      "peak": 0.89096016,
+      "dc_mean": 0.00031692612188654343,
+      "finite": true,
+      "extra": {}
+    },
+    {
+      "name": "sample_only_schema1",
+      "category": "runtime_sample_only",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 38400,
+      "raw_f32_path": "tests/golden/raw/sample_only_schema1.f32",
+      "raw_f32_sha256": "4db632afa3830f76673530a4a2f74551e8fb4cc1f2581a92ce271b676ec44ef4",
+      "wav_path": "tests/golden/wav/sample_only_schema1.wav",
+      "wav_sha256": "cd9ba4ae87311e6558456d7f001611a7d01479e8a5cef072f74d0b6cc0c2166e",
+      "rms": 0.04653183298818516,
+      "peak": 0.16991991,
+      "dc_mean": 0.00035974695858205524,
+      "finite": true,
+      "extra": {}
+    },
+    {
+      "name": "sample_only_schema2",
+      "category": "runtime_sample_only",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 38400,
+      "raw_f32_path": "tests/golden/raw/sample_only_schema2.f32",
+      "raw_f32_sha256": "70c935c6b56a86c8c1c16d7497355861a00cd2fbacae98a0fe6024a6818a7684",
+      "wav_path": "tests/golden/wav/sample_only_schema2.wav",
+      "wav_sha256": "c4fe0bb18f35baf1135a1b6182b17ac5c161fd3039b02a4b533b57df10986e25",
+      "rms": 0.04659671061138382,
+      "peak": 0.17608386,
+      "dc_mean": -0.0000185556379993083,
+      "finite": true,
+      "extra": {}
+    },
+    {
+      "name": "sample_layer_direct_schema1",
+      "category": "sample_layer_direct",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 24000,
+      "raw_f32_path": "tests/golden/raw/sample_layer_direct_schema1.f32",
+      "raw_f32_sha256": "302c8061946cfc7c889d812b4def2658cc616c8ec8c6588e4b7dd1d3970b4bd9",
+      "wav_path": null,
+      "wav_sha256": null,
+      "rms": 0.04362679493160916,
+      "peak": 0.17353512,
+      "dc_mean": 0.0005311325258868843,
+      "finite": true,
+      "extra": {
+        "source_labels": [
+          "on:legacy-0",
+          "on:legacy-1",
+          "on:legacy-2",
+          "off:legacy-off"
+        ],
+        "suspended_zone_samples": 52141
+      }
+    },
+    {
+      "name": "sample_layer_direct_schema2",
+      "category": "sample_layer_direct",
+      "sample_rate": 48000,
+      "channels": 1,
+      "total_frames": 24000,
+      "raw_f32_path": "tests/golden/raw/sample_layer_direct_schema2.f32",
+      "raw_f32_sha256": "7ffd4e010ec49478d90c11ec5532cc096582356ae2f2182e9dd30bdba2521f2c",
+      "wav_path": null,
+      "wav_sha256": null,
+      "rms": 0.0430291200478953,
+      "peak": 0.17950389,
+      "dc_mean": -0.00010806084666425401,
+      "finite": true,
+      "extra": {
+        "source_labels": [
+          "on:on_low",
+          "on:on_mid_a",
+          "on:on_mid_b",
+          "on:on_high",
+          "off:off_low",
+          "off:off_high"
+        ],
+        "suspended_zone_samples": 75810
+      }
+    },
+    {
+      "name": "sample_layer_resample_44k",
+      "category": "sample_layer_direct",
+      "sample_rate": 44100,
+      "channels": 1,
+      "total_frames": 22050,
+      "raw_f32_path": "tests/golden/raw/sample_layer_resample_44k.f32",
+      "raw_f32_sha256": "8f3a04aa97908d0aecafc66a08813ec2ca4e2f9dcd1a6d33e412e7aa4a5f5f81",
+      "wav_path": null,
+      "wav_sha256": null,
+      "rms": 0.04371457590459786,
+      "peak": 0.16879134,
+      "dc_mean": 0.0005511985361800992,
+      "finite": true,
+      "extra": {
+        "source_labels": [
+          "on:legacy-0",
+          "on:legacy-1",
+          "on:legacy-2",
+          "off:legacy-off"
+        ],
+        "suspended_zone_samples": 47905
+      }
+    }
+  ]
+}

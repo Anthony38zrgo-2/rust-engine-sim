@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
+exclude = [
+    "references",
+    "v2",
+]
 members = [
     "crates/es-units",
     "crates/es-function",

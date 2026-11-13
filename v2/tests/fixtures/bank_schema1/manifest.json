@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "key": "v10_gf509",
+  "output_gain": 0.61,
+  "samples": [
+    {
+      "key": "low",
+      "metadata": "low.sample-layer.json",
+      "native_rpm": 4200.0,
+      "sample_rate": 48000,
+      "channels": 1,
+      "loop_frames": 4800,
+      "tonal": "low_tonal.wav",
+      "tonal_sha256": "4b28f22ea82aed6b02ec52cef629206543d1ae19046c61051bc2ac6e403c6162",
+      "residual": "low_residual.wav",
+      "residual_sha256": "1a29542cb2c8fadbdffe6725044597812484898d0a20275e60ff5ba6827ed0b4"
+    },
+    {
+      "key": "med",
+      "metadata": "med.sample-layer.json",
+      "native_rpm": 5800.0,
+      "sample_rate": 48000,
+      "channels": 1,
+      "loop_frames": 4096,
+      "tonal": "med_tonal.wav",
+      "tonal_sha256": "8a0af869fd52f4e12ebe206b729111b9a16462d6a78b40c089f8ba14f9baa9d2",
+      "residual": "med_residual.wav",
+      "residual_sha256": "3223c28822b7d4d269d180a4a33b8d72619aac76ce8d39fc54e1688db530fb5e"
+    },
+    {
+      "key": "max",
+      "metadata": "max.sample-layer.json",
+      "native_rpm": 11500.0,
+      "sample_rate": 48000,
+      "channels": 1,
+      "loop_frames": 3600,
+      "tonal": "max_tonal.wav",
+      "tonal_sha256": "38cad3c32fe8fb77a87d4c62810009557db726f30bdad1523edecdc98a215622",
+      "residual": "max_residual.wav",
+      "residual_sha256": "761a53635052b020d1f571ac7d4a0969e5ebfbd242bc721289e2f257808e6eb4"
+    }
+  ]
+}

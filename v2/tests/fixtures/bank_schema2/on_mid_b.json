@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "sample_rate": 48000,
+  "rpm_anchor": 7400.0,
+  "firing_phase_degrees_at_loop_start": 28.0,
+  "loop_length_samples": 3840,
+  "files": {
+    "loop_tonal": "on_mid_b_tonal.wav",
+    "loop_residual": "on_mid_b_residual.wav"
+  }
+}
