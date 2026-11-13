@@ -1,7 +1,7 @@
 //! Block, crankcase, and cylinder-head structural radiation synthesizer.
 
 use crate::config::EngineStructuralProfile;
-use crate::dsp::{DcBlocker, ModalBank, OnePoleLowPass};
+use crate::dsp::{DcBlocker, ModalBank, OnePoleLowPass, TanhAdaa1};
 
 /// Structural radiation outputs per audio sample.
 #[derive(Clone, Copy, Debug, Default)]
@@ -18,6 +18,7 @@ pub struct BlockHead {
     pressure_dc: DcBlocker,
     pressure_lp_a: OnePoleLowPass,
     pressure_lp_b: OnePoleLowPass,
+    pressure_adaa: TanhAdaa1,
     crankcase: ModalBank,
     block: ModalBank,
     head: ModalBank,
@@ -93,6 +94,7 @@ impl BlockHead {
             pressure_dc: DcBlocker::new(28.0, sample_rate),
             pressure_lp_a: OnePoleLowPass::new(lp_hz, sample_rate),
             pressure_lp_b: OnePoleLowPass::new(lp_hz, sample_rate),
+            pressure_adaa: TanhAdaa1::new(1.8, 1.8),
             crankcase: ModalBank::new(crank_modes, sample_rate),
             block: ModalBank::new(block_modes, sample_rate),
             head: ModalBank::new(head_modes, sample_rate),
@@ -112,6 +114,27 @@ impl BlockHead {
             crankcase: self.crankcase.process(pressure_ac),
             block: self.block.process(derivative),
             head: self.head.process(derivative),
+        }
+    }
+
+    /// Evaluates structural banks with ADAA1 direct saturation and load/stochastic modal drift.
+    #[inline]
+    pub fn process_modulated(
+        &mut self,
+        pressure: f32,
+        derivative: f32,
+        load: f32,
+    ) -> StructureFrame {
+        let pressure_ac = self.pressure_dc.process(pressure);
+        let pressure_low = self
+            .pressure_lp_b
+            .process(self.pressure_lp_a.process(pressure_ac));
+        let pressure_direct = self.pressure_adaa.process(pressure_low);
+        StructureFrame {
+            pressure_direct,
+            crankcase: self.crankcase.process_modulated(pressure_ac, load, 1.0),
+            block: self.block.process_modulated(derivative, load, 1.0),
+            head: self.head.process_modulated(derivative, load, 1.0),
         }
     }
 }

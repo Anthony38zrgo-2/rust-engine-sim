@@ -2,7 +2,7 @@
 
 use crate::acoustics::paths::advance_delay;
 use crate::config::EngineStructuralProfile;
-use crate::dsp::{DcBlocker, ModalBank, OnePoleLowPass};
+use crate::dsp::{DcBlocker, ModalBank, OnePoleLowPass, TanhAdaa1};
 use crate::synthesis::EngineFrame;
 
 /// Radiating engine-cover panel and upper skin modal resonator network.
@@ -14,6 +14,8 @@ pub struct EngineCover {
     delay_cursor: usize,
     dc: DcBlocker,
     radiation_lowpass: OnePoleLowPass,
+    adaa: TanhAdaa1,
+    refined_dsp: bool,
 }
 
 impl EngineCover {
@@ -79,7 +81,15 @@ impl EngineCover {
             delay_cursor: 0,
             dc: DcBlocker::new(dc_hz, sample_rate),
             radiation_lowpass: OnePoleLowPass::lowpass_or_bypass(radiation_lowpass_hz, sample_rate),
+            adaa: TanhAdaa1::new(5.5, 2.1),
+            refined_dsp: false,
         }
+    }
+
+    /// Enables ADAA1 cover saturation (`drive = 5.5`) and high-mode thermal/load frequency drift.
+    pub fn with_refined_dsp(mut self, enabled: bool) -> Self {
+        self.refined_dsp = enabled;
+        self
     }
 
     /// Evaluates engine-cover radiation from head/block/turbulence and optional gearbox send.
@@ -93,14 +103,32 @@ impl EngineCover {
             excitation,
         );
 
-        let broad = self.broad_panels.process(arrived) * (1.0 + 0.28 * high_rpm);
-        let skin = self
-            .upper_skin
-            .process(arrived + frame.pressure_derivative * 0.08)
-            * (1.0 - 0.68 * high_rpm);
+        let (broad, skin) = if self.refined_dsp {
+            (
+                self.broad_panels
+                    .process_modulated(arrived, frame.load, 1.0)
+                    * (1.0 + 0.28 * high_rpm),
+                self.upper_skin.process_modulated(
+                    arrived + frame.pressure_derivative * 0.08,
+                    frame.load,
+                    1.0,
+                ) * (1.0 - 0.68 * high_rpm),
+            )
+        } else {
+            (
+                self.broad_panels.process(arrived) * (1.0 + 0.28 * high_rpm),
+                self.upper_skin
+                    .process(arrived + frame.pressure_derivative * 0.08)
+                    * (1.0 - 0.68 * high_rpm),
+            )
+        };
         let radiated = self
             .dc
             .process(self.radiation_lowpass.process(broad + skin * 1.35));
-        (radiated * 21.0).tanh() / 3.15
+        if self.refined_dsp {
+            self.adaa.process(radiated)
+        } else {
+            (radiated * 21.0).tanh() / 3.15
+        }
     }
 }

@@ -33,6 +33,7 @@ pub struct Crankshaft {
     cylinder_count: usize,
     firing_order: [usize; CYLINDER_COUNT],
     next_fire_abs: [f64; CYLINDER_COUNT],
+    last_fire_overshoot_deg: [f32; CYLINDER_COUNT],
     absolute_phase_deg: f64,
 }
 
@@ -66,6 +67,7 @@ impl Crankshaft {
             cylinder_count,
             firing_order,
             next_fire_abs,
+            last_fire_overshoot_deg: [0.0; CYLINDER_COUNT],
             absolute_phase_deg: 0.0,
         }
     }
@@ -82,12 +84,20 @@ impl Crankshaft {
         for slot in 0..self.cylinder_count {
             if self.next_fire_abs[slot] <= next {
                 let cylinder = self.firing_order[slot];
+                let overshoot = (next - self.next_fire_abs[slot]) as f32;
+                self.last_fire_overshoot_deg[cylinder] = overshoot.clamp(0.0, increment as f32);
                 events.mask |= 1 << cylinder;
                 self.next_fire_abs[slot] += CYCLE_DEG;
             }
         }
         self.absolute_phase_deg = next;
         events
+    }
+
+    /// Sub-sample crank-angle overshoot (deg) recorded when `cylinder` last crossed its firing angle.
+    #[inline]
+    pub fn fire_overshoot_deg(&self, cylinder: usize) -> f32 {
+        self.last_fire_overshoot_deg[cylinder]
     }
 
     /// Returns monotonically integrated crankshaft phase in degrees.

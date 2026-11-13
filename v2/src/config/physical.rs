@@ -140,6 +140,7 @@ pub struct PhysicalEngineConfig {
     pub use_physical_exhaust_excitation: bool,
     pub collector_geometry: Option<CollectorGeometry>,
     pub exhaust_excitation_gain: f32,
+    pub use_refined_dsp: bool,
 }
 
 impl Default for PhysicalEngineConfig {
@@ -185,6 +186,7 @@ impl Default for PhysicalEngineConfig {
             use_physical_exhaust_excitation: true,
             collector_geometry: None,
             exhaust_excitation_gain: 0.096,
+            use_refined_dsp: false,
         }
     }
 }
@@ -241,6 +243,7 @@ impl PhysicalEngineConfig {
                 mode_coupling: 0.72,
             }),
             exhaust_excitation_gain: 0.135,
+            use_refined_dsp: true,
         }
     }
 

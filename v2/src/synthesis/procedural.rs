@@ -5,7 +5,7 @@ use crate::control::{
     target_acoustic_energy_with_range, EnergyFollower, EngineInput, MechanicalState, ShiftGesture,
     ShiftPhase, COAST_IDLE_RPM,
 };
-use crate::dsp::{limit_master, DcBlocker};
+use crate::dsp::{limit_master, DcBlocker, MasterLimiterAdaa1};
 use crate::physics::{Crankshaft, Cylinder, CYLINDER_COUNT};
 use crate::synthesis::exhaust::{Collector, CollectorFrame, RunnerWaveguide};
 use crate::synthesis::frame::EngineFrame;
@@ -26,6 +26,7 @@ pub struct V10Engine {
     collectors: [Collector; 2],
     source_dc: DcBlocker,
     master_dc: DcBlocker,
+    master_limiter: MasterLimiterAdaa1,
     input: EngineInput,
     mechanical: MechanicalState,
     energy: EnergyFollower,
@@ -61,19 +62,23 @@ impl V10Engine {
                     sample_rate,
                     config.use_temperature_dependent_wave_speed,
                 )
+                .with_refined_dsp(config.use_refined_dsp)
             }),
             collectors: match &config.collector_geometry {
                 Some(geometry) => [
-                    Collector::from_geometry(sample_rate, offset_a, geometry),
-                    Collector::from_geometry(sample_rate, offset_b, geometry),
+                    Collector::from_geometry(sample_rate, offset_a, geometry)
+                        .with_refined_dsp(config.use_refined_dsp),
+                    Collector::from_geometry(sample_rate, offset_b, geometry)
+                        .with_refined_dsp(config.use_refined_dsp),
                 ],
                 None => [
-                    Collector::new(sample_rate, offset_a),
-                    Collector::new(sample_rate, offset_b),
+                    Collector::new(sample_rate, offset_a).with_refined_dsp(config.use_refined_dsp),
+                    Collector::new(sample_rate, offset_b).with_refined_dsp(config.use_refined_dsp),
                 ],
             },
             source_dc: DcBlocker::new(16.0, sample_rate),
             master_dc: DcBlocker::new(16.0, sample_rate),
+            master_limiter: MasterLimiterAdaa1::new(),
             input: EngineInput {
                 rpm: 0.0,
                 throttle: 0.0,
@@ -82,11 +87,14 @@ impl V10Engine {
             mechanical: MechanicalState::default(),
             energy: EnergyFollower::new(sample_rate),
             turbulence: match config.structural_profile {
-                EngineStructuralProfile::F1V10 => {
-                    TurbulenceGenerator::new(config.seed, sample_rate)
-                }
+                EngineStructuralProfile::F1V10 => TurbulenceGenerator::new(
+                    config.seed,
+                    sample_rate,
+                )
+                .with_refined_jet(config.use_refined_dsp, 2_300.0, 4_200.0),
                 EngineStructuralProfile::CastIronSohcL4 => {
                     TurbulenceGenerator::with_band(config.seed, sample_rate, 210.0, 1_350.0)
+                        .with_refined_jet(config.use_refined_dsp, 1_850.0, 3_100.0)
                 }
             },
             sample_clock: 0,
@@ -177,7 +185,14 @@ impl V10Engine {
         let cylinder_energy = smoothed_energy * shift_gain * slow_drift;
         for index in 0..active_cylinders {
             if events.fired(index) {
-                self.cylinders[index].fire(self.config.cycle_variation);
+                if self.config.use_refined_dsp {
+                    self.cylinders[index].fire_at(
+                        self.config.cycle_variation,
+                        self.crank.fire_overshoot_deg(index),
+                    );
+                } else {
+                    self.cylinders[index].fire(self.config.cycle_variation);
+                }
             }
             let cylinder =
                 self.cylinders[index].process(deg_per_sample, cylinder_energy, &self.config);
@@ -227,9 +242,16 @@ impl V10Engine {
             (derivative_a, pressure_a)
         };
         let structural_derivative = self.source_dc.process(structural_derivative_raw);
-        let structure = self
-            .block_head
-            .process(structural_pressure, structural_derivative);
+        let structure = if self.config.use_refined_dsp {
+            self.block_head.process_modulated(
+                structural_pressure,
+                structural_derivative,
+                self.input.load,
+            )
+        } else {
+            self.block_head
+                .process(structural_pressure, structural_derivative)
+        };
         let block_sum = structure.pressure_direct * self.config.pressure_direct_gain
             + structure.crankcase * self.config.crankcase_gain
             + structure.block * self.config.block_gain
@@ -251,18 +273,34 @@ impl V10Engine {
         };
 
         // Stage 6: Blowdown-triggered turbulent exhaust noise.
-        let turbulence = self.turbulence.process(
-            turbulence_trigger,
-            self.config.turbulence_gain,
-            self.mechanical.tc_cut,
-        );
+        let rpm_norm = ((self.input.rpm - 1_500.0)
+            / (self.config.coast_max_rpm - 1_500.0).max(500.0))
+        .clamp(0.0, 1.0);
+        let turbulence = if self.config.use_refined_dsp {
+            self.turbulence.process_with_rpm(
+                turbulence_trigger,
+                self.config.turbulence_gain,
+                self.mechanical.tc_cut,
+                rpm_norm,
+            )
+        } else {
+            self.turbulence.process(
+                turbulence_trigger,
+                self.config.turbulence_gain,
+                self.mechanical.tc_cut,
+            )
+        };
 
         // Stage 7: Master sum, DC blocking, sample clock advance, and safety limiter.
         let pre = self
             .master_dc
             .process((block_sum + exhaust + turbulence) * self.config.master_gain);
         self.sample_clock = self.sample_clock.wrapping_add(1);
-        let (master, reduction_db) = limit_master(pre);
+        let (master, reduction_db) = if self.config.use_refined_dsp {
+            self.master_limiter.process(pre)
+        } else {
+            limit_master(pre)
+        };
 
         debug_assert!(master.is_finite());
         EngineFrame {

@@ -1,6 +1,7 @@
 //! Single poppet exhaust-valve lift profile and effective curtain/throat area.
 
 use crate::config::EngineConfig;
+use crate::dsp::smooth_min;
 
 /// Port throat diameter as a fraction of the valve seat diameter.
 const PORT_THROAT_FRACTION_OF_VALVE_DIAMETER: f32 = 0.9;
@@ -75,6 +76,17 @@ impl ExhaustValve {
         let throat_diameter_m = self.valve_diameter_m * PORT_THROAT_FRACTION_OF_VALVE_DIAMETER;
         let throat_area = std::f32::consts::PI * 0.25 * throat_diameter_m * throat_diameter_m;
         curtain_area.min(throat_area) * self.discharge_coefficient
+    }
+
+    /// C1-continuous effective discharge flow area (`m²`) using polynomial `smooth_min`
+    /// between curtain and throat limits to eliminate derivative impulses on saturation.
+    #[inline]
+    pub fn effective_area_m2_smooth(&self, lift_fraction: f32) -> f32 {
+        let lift_m = lift_fraction.clamp(0.0, 1.0) * self.max_lift_m;
+        let curtain_area = std::f32::consts::PI * self.valve_diameter_m * lift_m;
+        let throat_diameter_m = self.valve_diameter_m * PORT_THROAT_FRACTION_OF_VALVE_DIAMETER;
+        let throat_area = std::f32::consts::PI * 0.25 * throat_diameter_m * throat_diameter_m;
+        smooth_min(curtain_area, throat_area, 0.12 * throat_area) * self.discharge_coefficient
     }
 }
 
@@ -174,5 +186,32 @@ mod tests {
             let lift = v.lift_fraction(open + step as f32);
             assert!((0.0..=1.0).contains(&lift), "lift out of bounds: {lift}");
         }
+    }
+
+    #[test]
+    fn smooth_effective_area_eliminates_curtain_throat_slope_discontinuity() {
+        let v = valve();
+        assert_eq!(v.effective_area_m2_smooth(0.0), 0.0);
+        let steps = 500usize;
+        let dl = 1.0 / steps as f32;
+        let mut max_second_diff_hard = 0.0f32;
+        let mut max_second_diff_smooth = 0.0f32;
+        for i in 1..steps {
+            let l0 = (i - 1) as f32 * dl;
+            let l1 = i as f32 * dl;
+            let l2 = (i + 1) as f32 * dl;
+            let d2_hard = (v.effective_area_m2(l2) - 2.0 * v.effective_area_m2(l1)
+                + v.effective_area_m2(l0))
+            .abs();
+            let d2_smooth = (v.effective_area_m2_smooth(l2) - 2.0 * v.effective_area_m2_smooth(l1)
+                + v.effective_area_m2_smooth(l0))
+            .abs();
+            max_second_diff_hard = max_second_diff_hard.max(d2_hard);
+            max_second_diff_smooth = max_second_diff_smooth.max(d2_smooth);
+        }
+        assert!(
+            max_second_diff_smooth < max_second_diff_hard * 0.25,
+            "smooth valve area must remove kink: hard={max_second_diff_hard:e}, smooth={max_second_diff_smooth:e}"
+        );
     }
 }

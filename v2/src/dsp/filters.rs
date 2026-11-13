@@ -1,7 +1,7 @@
 //! Basic allocation-free IIR/time-domain filter primitives shared across synthesis,
 //! acoustics, samples, transmission, and offline rendering.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 /// First-order DC-blocking high-pass filter.
 #[derive(Clone, Copy, Debug)]
@@ -296,5 +296,145 @@ impl TrackingNotch {
         self.y2 = self.y1;
         self.y1 = filtered;
         input + (filtered - input) * wet
+    }
+}
+
+/// Topology-preserving (Cytomic / TPT) second-order state-variable filter.
+///
+/// Unconditionally stable under rapid per-sample `cutoff_hz` and `q` modulation,
+/// clamped safely below Nyquist (`0.45 * sample_rate`).
+#[derive(Clone, Copy, Debug)]
+pub struct StateVariableFilter {
+    sample_rate: f32,
+    ic1eq: f32,
+    ic2eq: f32,
+}
+
+impl StateVariableFilter {
+    /// Initializes an SVF stage at `sample_rate` with zero integrator state.
+    pub fn new(sample_rate: f32) -> Self {
+        assert!(sample_rate.is_finite() && sample_rate > 0.0);
+        Self {
+            sample_rate,
+            ic1eq: 0.0,
+            ic2eq: 0.0,
+        }
+    }
+
+    #[inline]
+    fn step(&mut self, input: f32, cutoff_hz: f32, q: f32) -> (f32, f32, f32) {
+        let fc = cutoff_hz.clamp(20.0, self.sample_rate * 0.45);
+        let k = 1.0 / q.max(0.1);
+        let g = (PI * fc / self.sample_rate).tan();
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
+        let v3 = input - self.ic2eq;
+        let v1 = a1 * self.ic1eq + a2 * v3;
+        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
+        self.ic1eq = 2.0 * v1 - self.ic1eq;
+        self.ic2eq = 2.0 * v2 - self.ic2eq;
+        if self.ic1eq.abs() < 1.0e-30 {
+            self.ic1eq = 0.0;
+        }
+        if self.ic2eq.abs() < 1.0e-30 {
+            self.ic2eq = 0.0;
+        }
+        if !self.ic1eq.is_finite() || !self.ic2eq.is_finite() {
+            self.reset();
+            return (0.0, 0.0, 0.0);
+        }
+        (v1, v2, k)
+    }
+
+    /// Evaluates the 0 dB-normalized band-pass output (`k * v1`) at modulated `cutoff_hz`.
+    #[inline]
+    pub fn process_bandpass(&mut self, input: f32, cutoff_hz: f32, q: f32) -> f32 {
+        let (v1, _, k) = self.step(input, cutoff_hz, q);
+        k * v1
+    }
+
+    /// Evaluates the -12 dB/oct low-pass output (`v2`) at modulated `cutoff_hz`.
+    #[inline]
+    pub fn process_lowpass(&mut self, input: f32, cutoff_hz: f32, q: f32) -> f32 {
+        let (_, v2, _) = self.step(input, cutoff_hz, q);
+        v2
+    }
+
+    /// Clears integrator memory.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.ic1eq = 0.0;
+        self.ic2eq = 0.0;
+    }
+}
+
+/// Unity-magnitude Schroeder first-order all-pass diffuser for airborne comb smoothing.
+#[derive(Clone, Debug)]
+pub struct FirstOrderAllPass {
+    delay: Vec<f32>,
+    cursor: usize,
+    g: f32,
+}
+
+impl FirstOrderAllPass {
+    /// Preallocates an all-pass diffuser of `delay_ms` at `sample_rate` with feedback `g` in `(-1, 1)`.
+    pub fn new(delay_ms: f32, g: f32, sample_rate: f32) -> Self {
+        let delay_samples = (delay_ms * 0.001 * sample_rate).round().max(1.0) as usize;
+        Self {
+            delay: vec![0.0; delay_samples],
+            cursor: 0,
+            g: g.clamp(-0.95, 0.95),
+        }
+    }
+
+    /// Processes one sample with flat unity magnitude across all frequencies.
+    #[inline]
+    pub fn process(&mut self, input: f32) -> f32 {
+        let delayed = self.delay[self.cursor];
+        let v = input - self.g * delayed;
+        self.delay[self.cursor] = if v.abs() < 1.0e-30 { 0.0 } else { v };
+        self.cursor += 1;
+        if self.cursor == self.delay.len() {
+            self.cursor = 0;
+        }
+        delayed + self.g * v
+    }
+}
+
+/// Fourth-order Butterworth low-pass cascade (`-24 dB/oct` stopband slope) using two
+/// inline biquads for zero-allocation oversampled decimation.
+#[derive(Clone, Copy, Debug)]
+pub struct ButterworthLp4 {
+    stages: [Biquad; 2],
+}
+
+impl ButterworthLp4 {
+    /// Q factors `1 / (2 * cos((2k + 1) * pi / 8))`, low-Q section first for headroom.
+    const STAGE_QS: [f32; 2] = [0.541_196_1, 1.306_563];
+
+    /// Builds a 4th-order Butterworth low-pass filter at `cutoff_hz` and `sample_rate`.
+    pub fn new(cutoff_hz: f32, sample_rate: f32) -> Self {
+        let clamped_rate = sample_rate.max(1.0);
+        let clamped_cutoff = cutoff_hz.clamp(1.0, clamped_rate * 0.45);
+        Self {
+            stages: Self::STAGE_QS.map(|q| Biquad::lowpass(clamped_cutoff, q, clamped_rate)),
+        }
+    }
+
+    /// Processes a single sample through both cascaded biquad sections.
+    #[inline]
+    pub fn process(&mut self, mut sample: f32) -> f32 {
+        for stage in &mut self.stages {
+            sample = stage.process(sample);
+        }
+        sample
+    }
+
+    /// Clears internal filter memory.
+    pub fn reset(&mut self) {
+        for stage in &mut self.stages {
+            stage.reset();
+        }
     }
 }

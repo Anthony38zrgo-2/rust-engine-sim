@@ -7,7 +7,6 @@ use v10_engine_synth::config::{
     CollectorGeometry, EngineMode, Gf509RuntimeConfig, ZONE_TRIM_SLOTS,
 };
 use v10_engine_synth::control::EngineInput;
-use v10_engine_synth::dsp::SpectrumChainConfig;
 use v10_engine_synth::offline::{
     apply_scene_gain_override, parse_shift_sequence, run_offline_render, OfflineRenderConfig,
 };
@@ -72,8 +71,8 @@ fn parse_args() -> Result<OfflineRenderConfig, String> {
             });
     let mut scene_gains: Vec<(String, f32)> = Vec::new();
     let mut cover_lowpass_hz: Option<f32> = None;
-    let mut v10_filter = SpectrumChainConfig::default();
-    let mut gearbox_filter = SpectrumChainConfig::default();
+    let mut v10_filter = config.runtime.v10_filter;
+    let mut gearbox_filter = config.runtime.gearbox_filter;
 
     let mut i = 0;
     while i < raw.len() {
@@ -324,6 +323,16 @@ fn parse_args() -> Result<OfflineRenderConfig, String> {
             "--gearbox-lowpass-slope" => {
                 gearbox_filter.lowpass_slope_db_per_oct =
                     parse_value(&raw, &mut i, "--gearbox-lowpass-slope")?;
+            }
+            "--refined-dsp" => {
+                config.runtime.engine.use_refined_dsp = true;
+                config.runtime.scene.use_refined_dsp = true;
+                config.runtime.transmission.use_refined_dsp = true;
+            }
+            "--no-refined-dsp" => {
+                config.runtime.engine.use_refined_dsp = false;
+                config.runtime.scene.use_refined_dsp = false;
+                config.runtime.transmission.use_refined_dsp = false;
             }
             unknown => return Err(format!("unknown argument: {unknown}")),
         }

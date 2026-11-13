@@ -4,6 +4,7 @@
 //! Crank angle is measured in degrees, `0°` applying at the compression TDC.
 
 use crate::config::EngineConfig;
+use crate::dsp::hermite_4pt;
 
 /// Number of intervals in the 720° volume phase table.
 pub const VOLUME_TABLE_SAMPLES: usize = 1_024;
@@ -105,19 +106,58 @@ impl SliderCrank {
         lower + (upper - lower) * fraction
     }
 
+    /// C1-continuous periodic cubic Hermite (Catmull-Rom) interpolation of chamber volume (`m³`)
+    /// eliminating piecewise-linear slope discontinuities across 720° table entries with zero extra storage.
+    #[inline]
+    pub fn instantaneous_volume_m3_smooth(&self, crank_angle_deg: f32) -> f32 {
+        let phase_deg = crank_angle_deg.rem_euclid(720.0);
+        let position = phase_deg * VOLUME_TABLE_SAMPLES as f32 / 720.0;
+        let index = (position as usize).min(VOLUME_TABLE_SAMPLES - 1);
+        let t = (position - index as f32).clamp(0.0, 1.0);
+        let idx_m1 = (index + VOLUME_TABLE_SAMPLES - 1) % VOLUME_TABLE_SAMPLES;
+        let idx_2 = (index + 2) % VOLUME_TABLE_SAMPLES;
+        hermite_4pt(
+            self.volume_table_m3[idx_m1],
+            self.volume_table_m3[index],
+            self.volume_table_m3[index + 1],
+            self.volume_table_m3[idx_2],
+            t,
+        )
+    }
+
     /// Exact analytic volume retained as reference for bounded-equivalence tests.
     pub(crate) fn instantaneous_volume_m3_exact(&self, crank_angle_deg: f32) -> f32 {
         let area = self.area_m2 as f64;
         (self.clearance_volume_m3 as f64 + area * self.disp(tau(crank_angle_deg))) as f32
     }
 
+    /// Exact analytic volume and derivative `dV / d(crank_angle_deg)` (m³/deg).
+    #[inline]
+    pub(crate) fn volume_and_ddeg_exact(&self, crank_angle_deg: f32) -> (f32, f32) {
+        let (disp, ds_dtheta_rad) = self.disp_and_dtheta(tau(crank_angle_deg));
+        let area = self.area_m2 as f64;
+        let volume = self.clearance_volume_m3 as f64 + area * disp;
+        let dv_ddeg = area * ds_dtheta_rad * (std::f64::consts::PI / 180.0);
+        (volume as f32, dv_ddeg as f32)
+    }
+
     fn disp(&self, theta: f64) -> f64 {
+        self.disp_and_dtheta(theta).0
+    }
+
+    #[inline]
+    fn disp_and_dtheta(&self, theta: f64) -> (f64, f64) {
         let r = self.crank_radius_m as f64;
         let l = self.rod_length_m as f64;
-        let sin = theta.sin();
-        let cos = theta.cos();
+        let (sin, cos) = theta.sin_cos();
         let sqrt = (l * l - r * r * sin * sin).max(0.0).sqrt();
-        r * (1.0 - cos) + l - sqrt
+        let disp = r * (1.0 - cos) + l - sqrt;
+        let rod_term = if sqrt > 1.0e-9 {
+            (r * r * sin * cos) / sqrt
+        } else {
+            0.0
+        };
+        (disp, r * sin + rod_term)
     }
 }
 
@@ -254,5 +294,74 @@ mod tests {
             let v = s.instantaneous_volume_m3(i as f32);
             assert!(v.is_finite() && v > 0.0);
         }
+    }
+
+    #[test]
+    fn hermite_smooth_volume_eliminates_knot_slope_steps_and_improves_accuracy() {
+        let s = sample();
+        let mut max_error = 0.0f32;
+        for i in 0..=20_000 {
+            let angle = i as f32 * 0.037;
+            let exact = s.instantaneous_volume_m3_exact(angle);
+            let smooth = s.instantaneous_volume_m3_smooth(angle);
+            max_error = max_error.max((smooth - exact).abs());
+        }
+        assert!(
+            max_error <= 1.0e-8,
+            "Hermite smooth volume error {max_error:e} m³ exceeds 1.0e-8 m³"
+        );
+
+        // Verify second difference across a high-curvature table knot boundary near TDC
+        // is drastically smaller with Hermite splines than with piecewise-linear lookup.
+        let step_deg = 720.0 / VOLUME_TABLE_SAMPLES as f32;
+        let knot = 1.0 * step_deg;
+        let eps = 0.1f32;
+        let d_left_lin =
+            (s.instantaneous_volume_m3(knot) - s.instantaneous_volume_m3(knot - eps)) / eps;
+        let d_right_lin =
+            (s.instantaneous_volume_m3(knot + eps) - s.instantaneous_volume_m3(knot)) / eps;
+        let d_left_smooth = (s.instantaneous_volume_m3_smooth(knot)
+            - s.instantaneous_volume_m3_smooth(knot - eps))
+            / eps;
+        let d_right_smooth = (s.instantaneous_volume_m3_smooth(knot + eps)
+            - s.instantaneous_volume_m3_smooth(knot))
+            / eps;
+        assert!(
+            (d_right_smooth - d_left_smooth).abs() < (d_right_lin - d_left_lin).abs() * 0.35,
+            "Hermite knot slope kink {} not smaller than linear {}",
+            (d_right_smooth - d_left_smooth).abs(),
+            (d_right_lin - d_left_lin).abs()
+        );
+    }
+
+    #[test]
+    fn analytic_volume_derivative_matches_central_difference_and_has_zero_knot_kinks() {
+        let s = SliderCrank::new(0.089, 0.089, 0.145, 9.2);
+        for deg in [0.0f32, 17.5, 73.2, 90.0, 142.8, 180.0, 235.4, 319.9] {
+            let h = 1.0e-2f32;
+            let (v, dv) = s.volume_and_ddeg_exact(deg);
+            let v_exact = s.instantaneous_volume_m3_exact(deg);
+            assert!((v - v_exact).abs() < 1.0e-10);
+            let fd = (s.instantaneous_volume_m3_exact(deg + h)
+                - s.instantaneous_volume_m3_exact(deg - h))
+                / (2.0 * h);
+            assert!(
+                (dv - fd).abs() < 1.0e-7,
+                "analytic dv {dv} vs central diff {fd} at {deg} deg"
+            );
+        }
+
+        // Exact analytic geometry has no knot kinks at table boundaries.
+        let step_deg = 720.0 / VOLUME_TABLE_SAMPLES as f32;
+        let knot = 3.0 * step_deg;
+        let eps = 1.0e-3f32;
+        let (_, d_left) = s.volume_and_ddeg_exact(knot - eps);
+        let (_, d_mid) = s.volume_and_ddeg_exact(knot);
+        let (_, d_right) = s.volume_and_ddeg_exact(knot + eps);
+        let curvature_diff = (d_right - 2.0 * d_mid + d_left).abs();
+        assert!(
+            curvature_diff < 1.0e-10,
+            "analytic geometry should be C^2 smooth at knots, got {curvature_diff}"
+        );
     }
 }

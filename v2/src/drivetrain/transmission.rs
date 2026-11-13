@@ -4,7 +4,7 @@ use std::f32::consts::TAU;
 
 use crate::config::TransmissionConfig;
 use crate::control::ShiftPhase;
-use crate::dsp::{xorshift64_signed, BandPassNoise};
+use crate::dsp::{xorshift64_signed, BandPassNoise, OnePoleLowPass};
 
 const MAX_OUTPUT: f32 = 8.0;
 
@@ -26,6 +26,7 @@ pub struct TransmissionSynth {
     sample_rate: f32,
     rng: u64,
     shaft_hz: f32,
+    shaft_phase: f32,
     gear_phase: f32,
     final_phase: f32,
     rpm_norm: f32,
@@ -43,6 +44,8 @@ pub struct TransmissionSynth {
     rattle_env: f32,
     rattle_filter: BandPassNoise,
     slip_filter: BandPassNoise,
+    mesh_jitter_lp: OnePoleLowPass,
+    jitter_rng: u64,
     last_torque: f32,
     last_clutch: f32,
     thump_active: bool,
@@ -62,6 +65,7 @@ impl TransmissionSynth {
             sample_rate,
             rng: 0,
             shaft_hz: 0.0,
+            shaft_phase: 0.0,
             gear_phase: 0.0,
             final_phase: 0.0,
             rpm_norm: 0.0,
@@ -79,6 +83,8 @@ impl TransmissionSynth {
             rattle_env: 0.0,
             rattle_filter: BandPassNoise::new(1_500.0, 5_000.0, sample_rate),
             slip_filter: BandPassNoise::new(300.0, 1_500.0, sample_rate),
+            mesh_jitter_lp: OnePoleLowPass::lowpass_or_bypass(180.0, sample_rate),
+            jitter_rng: 0,
             last_torque: 0.0,
             last_clutch: 0.0,
             thump_active: false,
@@ -93,7 +99,9 @@ impl TransmissionSynth {
     pub fn reset(&mut self) {
         let sample_rate = self.sample_rate;
         self.rng = self.config.seed | 1;
+        self.jitter_rng = (self.config.seed ^ 0x6C62_272E_07BB_0142) | 1;
         self.shaft_hz = 0.0;
+        self.shaft_phase = 0.0;
         self.gear_phase = 0.0;
         self.final_phase = 0.0;
         self.rpm_norm = 0.0;
@@ -107,6 +115,7 @@ impl TransmissionSynth {
         self.rattle_env = 0.0;
         self.rattle_filter = BandPassNoise::new(1_500.0, 5_000.0, sample_rate);
         self.slip_filter = BandPassNoise::new(300.0, 1_500.0, sample_rate);
+        self.mesh_jitter_lp = OnePoleLowPass::lowpass_or_bypass(180.0, sample_rate);
         self.last_torque = 0.0;
         self.last_clutch = 0.0;
         self.thump_active = false;
@@ -157,11 +166,23 @@ impl TransmissionSynth {
         let final_mesh_hz = self.shaft_hz / self.config.final_drive * self.config.final_teeth;
         self.gear_phase = wrap_phase(self.gear_phase + TAU * gear_mesh_hz * dt);
         self.final_phase = wrap_phase(self.final_phase + TAU * final_mesh_hz * dt);
-        let gear_tone = self.gear_phase.sin()
-            + 0.45 * (2.0 * self.gear_phase).sin()
-            + 0.22 * (3.0 * self.gear_phase).sin();
-        let final_tone = self.final_phase.sin() + 0.5 * (2.0 * self.final_phase).sin();
         let load = 0.30 + 0.70 * input.torque.abs().min(1.0);
+        let (gear_phase, final_phase) = if self.config.use_refined_dsp {
+            self.shaft_phase = wrap_phase(self.shaft_phase + TAU * self.shaft_hz * dt);
+            let jitter_noise = self
+                .mesh_jitter_lp
+                .process(xorshift64_signed(&mut self.jitter_rng));
+            let gear_jitter = (0.018 * self.shaft_phase.sin() + 0.025 * jitter_noise) * load;
+            (
+                self.gear_phase + gear_jitter,
+                self.final_phase + 0.7 * gear_jitter,
+            )
+        } else {
+            (self.gear_phase, self.final_phase)
+        };
+        let gear_tone =
+            gear_phase.sin() + 0.45 * (2.0 * gear_phase).sin() + 0.22 * (3.0 * gear_phase).sin();
+        let final_tone = final_phase.sin() + 0.5 * (2.0 * final_phase).sin();
         let drive = 0.35 + 0.65 * self.rpm_norm;
         let whine = (gear_tone * 0.7 + final_tone * 0.5)
             * self.engagement

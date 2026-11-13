@@ -72,6 +72,8 @@ pub struct EngineConfig {
     pub collector_geometry: Option<CollectorGeometry>,
     /// Level-matching gain from normalized runner mass-flow delta to acoustic excitation.
     pub exhaust_excitation_gain: f32,
+    /// Enables C1 smooth physics, Hermite waveguides, dual-band turbulence, and modal drift.
+    pub use_refined_dsp: bool,
     pub pressure_direct_gain: f32,
     pub crankcase_gain: f32,
     pub block_gain: f32,
@@ -189,6 +191,7 @@ impl EngineConfig {
             use_physical_exhaust_excitation: self.use_physical_exhaust_excitation,
             collector_geometry: self.collector_geometry.clone(),
             exhaust_excitation_gain: self.exhaust_excitation_gain,
+            use_refined_dsp: self.use_refined_dsp,
         }
     }
 
@@ -253,6 +256,7 @@ impl EngineConfig {
             use_physical_exhaust_excitation: physical.use_physical_exhaust_excitation,
             collector_geometry: physical.collector_geometry,
             exhaust_excitation_gain: physical.exhaust_excitation_gain,
+            use_refined_dsp: physical.use_refined_dsp,
             pressure_direct_gain: mix.pressure_direct_gain,
             crankcase_gain: mix.crankcase_gain,
             block_gain: mix.block_gain,

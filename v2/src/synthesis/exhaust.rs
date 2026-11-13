@@ -6,13 +6,19 @@ use crate::config::physical::{
     CollectorGeometry, COLLECTOR_END_CORRECTION_RADIUS_FACTOR, GAMMA,
     SPECIFIC_GAS_CONSTANT_J_PER_KG_K,
 };
-use crate::dsp::{DcBlocker, ModalBank};
+use crate::dsp::{hermite_4pt, Biquad, DcBlocker, ModalBank, OnePoleLowPass};
 
 /// Coldest runner gas temperature considered when sizing the circular delay buffer (K).
 const MIN_RUNNER_TEMPERATURE_K: f32 = 200.0;
 
 /// Viscous and thermal wall boundary-layer acoustic attenuation coefficient per runner transit.
 pub const RUNNER_WALL_LOSS_COEFF: f32 = 0.32;
+/// Incident collector-bound runner wall boundary-layer cutoff (Hz) when refined DSP is enabled.
+const RUNNER_INCIDENT_WALL_LOWPASS_HZ: f32 = 9_500.0;
+/// Thermal wave-speed slew time constant (~3.5 ms) separating physical T_run from acoustic delay.
+const RUNNER_TEMPERATURE_SLEW_SECONDS: f32 = 0.0035;
+/// Open-end runner radiation reflection cutoff (Hz) so high frequencies radiate out instead of ringing.
+const RUNNER_RADIATION_REFLECTION_CUTOFF_HZ: f32 = 1_650.0;
 
 /// Quadratic confluence dissipation coefficient at the 5-in-1 collector junction.
 pub const COLLECTOR_CONFLUENCE_LOSS_COEFF: f32 = 0.08;
@@ -22,6 +28,11 @@ pub const COLLECTOR_CHAMBER_INFLOW_COEFF: f32 = 0.42;
 const COLLECTOR_MAX_MODES: usize = 12;
 /// Highest derived collector mode considered before the sample-rate guard.
 const COLLECTOR_MAX_MODE_HZ: f32 = 6_000.0;
+/// Local oversampling factor used by `Collector` in refined DSP mode.
+const COLLECTOR_OVERSAMPLE: usize = 4;
+/// Eighth-order Butterworth section Q factors (`1 / (2 * cos((2k + 1) * pi / 16))`)
+/// for flat passband and steep image/alias attenuation in 4x local collector oversampling.
+const BUTTERWORTH_8_QS: [f32; 4] = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_4];
 
 /// Instantaneous acoustic state of the runner waveguide.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -39,6 +50,12 @@ pub struct RunnerWaveguide {
     cursor: usize,
     reflection: f32,
     feedback_lowpass: f32,
+    radiation_reflect_lp_a: OnePoleLowPass,
+    radiation_reflect_lp_b: OnePoleLowPass,
+    incident_lowpass: OnePoleLowPass,
+    acoustic_temperature_k: f32,
+    temperature_slew_alpha: f32,
+    refined_dsp: bool,
     length_m: f32,
     sample_rate: f32,
     temperature_dependent: bool,
@@ -69,6 +86,22 @@ impl RunnerWaveguide {
             cursor: 0,
             reflection,
             feedback_lowpass: 0.0,
+            radiation_reflect_lp_a: OnePoleLowPass::lowpass_or_bypass(
+                RUNNER_RADIATION_REFLECTION_CUTOFF_HZ,
+                sample_rate,
+            ),
+            radiation_reflect_lp_b: OnePoleLowPass::lowpass_or_bypass(
+                RUNNER_RADIATION_REFLECTION_CUTOFF_HZ,
+                sample_rate,
+            ),
+            incident_lowpass: OnePoleLowPass::lowpass_or_bypass(
+                RUNNER_INCIDENT_WALL_LOWPASS_HZ,
+                sample_rate,
+            ),
+            acoustic_temperature_k: -1.0,
+            temperature_slew_alpha: 1.0
+                - (-1.0 / (RUNNER_TEMPERATURE_SLEW_SECONDS * sample_rate.max(1.0))).exp(),
+            refined_dsp: false,
             length_m,
             sample_rate,
             temperature_dependent,
@@ -78,16 +111,62 @@ impl RunnerWaveguide {
         }
     }
 
+    /// Enables 4-point Catmull-Rom cubic interpolation, smoothed acoustic temperature,
+    /// open-end radiation rolloff, and incident wall absorption.
+    pub fn with_refined_dsp(mut self, enabled: bool) -> Self {
+        self.refined_dsp = enabled;
+        self
+    }
+
     /// Propagates one sample of exhaust excitation at `temperature_k`.
     #[inline]
     pub fn process(&mut self, input: f32, temperature_k: f32) -> f32 {
         if !self.temperature_dependent {
             return self.process_fixed(input);
         }
-        let speed = speed_of_sound_mps(temperature_k.max(MIN_RUNNER_TEMPERATURE_K));
-        let max_delay = (self.delay.len() - 1) as f32;
+        let target_temperature_k = temperature_k.max(MIN_RUNNER_TEMPERATURE_K);
+        let effective_temperature_k = if self.refined_dsp {
+            if self.acoustic_temperature_k < 0.0 {
+                self.acoustic_temperature_k = target_temperature_k;
+            } else {
+                self.acoustic_temperature_k += self.temperature_slew_alpha
+                    * (target_temperature_k - self.acoustic_temperature_k);
+            }
+            self.acoustic_temperature_k
+        } else {
+            target_temperature_k
+        };
+        let speed = speed_of_sound_mps(effective_temperature_k);
+        let len = self.delay.len();
+        let n = len as f32;
+        if self.refined_dsp && len >= 5 {
+            let max_delay = (len - 2) as f32;
+            let min_delay = 3.0_f32.min(max_delay);
+            let delay_float =
+                (self.length_m / speed * self.sample_rate).clamp(min_delay, max_delay);
+            let mut read = self.cursor as f32 - delay_float;
+            if read < 0.0 {
+                read += n;
+            }
+            if read >= n {
+                read -= n;
+            }
+            let i0 = read.floor() as usize;
+            let i_m1 = (i0 + len - 1) % len;
+            let i1 = (i0 + 1) % len;
+            let i2 = (i0 + 2) % len;
+            let frac = read - i0 as f32;
+            let arrived = hermite_4pt(
+                self.delay[i_m1],
+                self.delay[i0],
+                self.delay[i1],
+                self.delay[i2],
+                frac,
+            );
+            return self.advance_wave(input, arrived);
+        }
+        let max_delay = (len - 1) as f32;
         let delay_float = (self.length_m / speed * self.sample_rate).clamp(2.0, max_delay);
-        let n = self.delay.len() as f32;
         let mut read = self.cursor as f32 - delay_float;
         if read < 0.0 {
             read += n;
@@ -96,7 +175,7 @@ impl RunnerWaveguide {
             read -= n;
         }
         let i0 = read.floor() as usize;
-        let i1 = (i0 + 1) % self.delay.len();
+        let i1 = (i0 + 1) % len;
         let frac = read - read.floor();
         let arrived = self.delay[i0] + frac * (self.delay[i1] - self.delay[i0]);
         self.advance_wave(input, arrived)
@@ -110,18 +189,31 @@ impl RunnerWaveguide {
 
     #[inline]
     fn advance_wave(&mut self, input: f32, arrived: f32) -> f32 {
-        self.feedback_lowpass += RUNNER_WALL_LOSS_COEFF * (arrived - self.feedback_lowpass);
-        let reflected = self.reflection * self.feedback_lowpass;
+        let reflected = if self.refined_dsp {
+            let radiation_damped = self
+                .radiation_reflect_lp_b
+                .process(self.radiation_reflect_lp_a.process(arrived));
+            self.feedback_lowpass = radiation_damped;
+            self.reflection * radiation_damped
+        } else {
+            self.feedback_lowpass += RUNNER_WALL_LOSS_COEFF * (arrived - self.feedback_lowpass);
+            self.reflection * self.feedback_lowpass
+        };
         let acoustic_pressure = input + reflected;
         self.delay[self.cursor] = acoustic_pressure;
         self.cursor += 1;
         if self.cursor == self.delay.len() {
             self.cursor = 0;
         }
+        let transmitted = if self.refined_dsp {
+            self.incident_lowpass.process(arrived)
+        } else {
+            arrived
+        };
         self.acoustic_pressure = acoustic_pressure;
         self.reflected_wave = reflected;
-        self.last_arrived = arrived;
-        arrived
+        self.last_arrived = transmitted;
+        transmitted
     }
 
     pub fn delay_samples(&self) -> usize {
@@ -160,6 +252,29 @@ pub struct CollectorFrame {
     pub radiated: f32,
 }
 
+/// Matched 8th-order Butterworth low-pass cascade for zero-allocation local oversampling.
+#[derive(Clone, Copy, Debug)]
+struct ButterworthLp8 {
+    stages: [Biquad; 4],
+}
+
+impl ButterworthLp8 {
+    fn new(cutoff_hz: f32, sample_rate: f32) -> Self {
+        let clamped_cutoff = cutoff_hz.clamp(10.0, sample_rate * 0.48);
+        Self {
+            stages: BUTTERWORTH_8_QS.map(|q| Biquad::lowpass(clamped_cutoff, q, sample_rate)),
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, mut signal: f32) -> f32 {
+        for stage in &mut self.stages {
+            signal = stage.process(signal);
+        }
+        signal
+    }
+}
+
 /// Lumped 5-in-1 exhaust collector chamber with modal resonator tailpipe radiation.
 #[derive(Clone, Debug)]
 pub struct Collector {
@@ -167,31 +282,58 @@ pub struct Collector {
     dc: DcBlocker,
     chamber_pressure: f32,
     chamber_leak: f32,
+    sub_inflow: f32,
+    sub_leak: f32,
+    upsample_lp: ButterworthLp8,
+    junction_downsample_lp: ButterworthLp8,
+    pressure_downsample_lp: ButterworthLp8,
+    refined_dsp: bool,
 }
 
 impl Collector {
-    /// Legacy empirically tuned 5-in-1 collector bank.
-    pub fn new(sample_rate: f32, bank_offset: f32) -> Self {
+    fn build(body: ModalBank, sample_rate: f32, chamber_leak: f32) -> Self {
+        let sub_leak =
+            1.0 - (1.0 - chamber_leak.clamp(0.0, 0.999)).powf(1.0 / COLLECTOR_OVERSAMPLE as f32);
+        let sub_inflow = if chamber_leak > 1.0e-6 {
+            COLLECTOR_CHAMBER_INFLOW_COEFF * sub_leak / chamber_leak
+        } else {
+            COLLECTOR_CHAMBER_INFLOW_COEFF / COLLECTOR_OVERSAMPLE as f32
+        };
+        let os_rate = sample_rate * COLLECTOR_OVERSAMPLE as f32;
+        let os_cutoff = sample_rate * 0.40;
         Self {
-            body: ModalBank::new(
-                &[
-                    (164.0 + bank_offset, 0.022, 0.45),
-                    (328.0 + bank_offset * 1.7, 0.016, 0.60),
-                    (585.0 + bank_offset * 2.1, 0.008, 0.58),
-                    (820.0 + bank_offset * 2.4, 0.006, 0.85),
-                    (1_080.0 + bank_offset * 2.8, 0.005, 0.95),
-                    (1_390.0 + bank_offset * 2.9, 0.0042, 0.80),
-                    (1_720.0 + bank_offset * 3.0, 0.0036, 0.36),
-                    (2_080.0 + bank_offset * 3.0, 0.0030, 0.30),
-                    (3_250.0 + bank_offset * 4.0, 0.0020, 0.20),
-                    (5_200.0 + bank_offset * 5.0, 0.0012, 0.10),
-                ],
-                sample_rate,
-            ),
+            body,
             dc: DcBlocker::new(18.0, sample_rate),
             chamber_pressure: 0.0,
-            chamber_leak: 1.0 - (-1.0 / (0.0035 * sample_rate)).exp(),
+            chamber_leak,
+            sub_inflow,
+            sub_leak,
+            upsample_lp: ButterworthLp8::new(os_cutoff, os_rate),
+            junction_downsample_lp: ButterworthLp8::new(os_cutoff, os_rate),
+            pressure_downsample_lp: ButterworthLp8::new(os_cutoff, os_rate),
+            refined_dsp: false,
         }
+    }
+
+    /// Legacy empirically tuned 5-in-1 collector bank.
+    pub fn new(sample_rate: f32, bank_offset: f32) -> Self {
+        let body = ModalBank::new(
+            &[
+                (164.0 + bank_offset, 0.022, 0.45),
+                (328.0 + bank_offset * 1.7, 0.016, 0.60),
+                (585.0 + bank_offset * 2.1, 0.008, 0.58),
+                (820.0 + bank_offset * 2.4, 0.006, 0.85),
+                (1_080.0 + bank_offset * 2.8, 0.005, 0.95),
+                (1_390.0 + bank_offset * 2.9, 0.0042, 0.80),
+                (1_720.0 + bank_offset * 3.0, 0.0036, 0.36),
+                (2_080.0 + bank_offset * 3.0, 0.0030, 0.30),
+                (3_250.0 + bank_offset * 4.0, 0.0020, 0.20),
+                (5_200.0 + bank_offset * 5.0, 0.0012, 0.10),
+            ],
+            sample_rate,
+        );
+        let chamber_leak = 1.0 - (-1.0 / (0.0035 * sample_rate)).exp();
+        Self::build(body, sample_rate, chamber_leak)
     }
 
     /// Collector derived from physical chamber volume and tailpipe dimensions.
@@ -230,24 +372,50 @@ impl Collector {
             .collect();
 
         let decay_time = (2.0 / (loss * helmholtz)).clamp(0.0006, 1.5);
-        Self {
-            body: ModalBank::new(&spec, sample_rate),
-            dc: DcBlocker::new(18.0, sample_rate),
-            chamber_pressure: 0.0,
-            chamber_leak: 1.0 - (-1.0 / (decay_time * sample_rate)).exp(),
-        }
+        let chamber_leak = 1.0 - (-1.0 / (decay_time * sample_rate)).exp();
+        Self::build(
+            ModalBank::new(&spec, sample_rate),
+            sample_rate,
+            chamber_leak,
+        )
+    }
+
+    /// Enables local 4x oversampling around the nonlinear junction confluence and chamber saturation.
+    pub fn with_refined_dsp(mut self, enabled: bool) -> Self {
+        self.refined_dsp = enabled;
+        self
     }
 
     /// Evaluates junction interference, chamber pressure, and tailpipe radiation for 5 runners.
     #[inline]
     pub fn process_bank(&mut self, runners: &[f32; 5]) -> CollectorFrame {
         let sum: f32 = runners.iter().sum();
-        let nonlinear_loss = COLLECTOR_CONFLUENCE_LOSS_COEFF * sum * sum.abs();
-        let junction_input = sum - nonlinear_loss;
-
-        self.chamber_pressure += COLLECTOR_CHAMBER_INFLOW_COEFF * junction_input
-            - self.chamber_leak * self.chamber_pressure;
-        let pressure = self.chamber_pressure / (1.0 + 0.35 * self.chamber_pressure.abs());
+        let (junction_input, pressure) = if self.refined_dsp {
+            let mut j_out = 0.0;
+            let mut p_out = 0.0;
+            for step in 0..COLLECTOR_OVERSAMPLE {
+                let raw_up = if step == 0 {
+                    sum * COLLECTOR_OVERSAMPLE as f32
+                } else {
+                    0.0
+                };
+                let x_up = self.upsample_lp.process(raw_up);
+                let j_up = x_up - COLLECTOR_CONFLUENCE_LOSS_COEFF * x_up * x_up.abs();
+                self.chamber_pressure +=
+                    self.sub_inflow * j_up - self.sub_leak * self.chamber_pressure;
+                let p_up = self.chamber_pressure / (1.0 + 0.35 * self.chamber_pressure.abs());
+                j_out = self.junction_downsample_lp.process(j_up);
+                p_out = self.pressure_downsample_lp.process(p_up);
+            }
+            (j_out, p_out)
+        } else {
+            let nonlinear_loss = COLLECTOR_CONFLUENCE_LOSS_COEFF * sum * sum.abs();
+            let junction_input = sum - nonlinear_loss;
+            self.chamber_pressure += COLLECTOR_CHAMBER_INFLOW_COEFF * junction_input
+                - self.chamber_leak * self.chamber_pressure;
+            let pressure = self.chamber_pressure / (1.0 + 0.35 * self.chamber_pressure.abs());
+            (junction_input, pressure)
+        };
         let resonant = self.body.process(junction_input + pressure * 0.12);
         CollectorFrame {
             pressure,
@@ -399,5 +567,89 @@ mod tests {
             }
         }
         assert!(peak > 0.0 && tail_peak < peak * 1.0e-3);
+    }
+
+    #[test]
+    fn refined_waveguide_cubic_hermite_and_wall_loss_reduce_hf_harshness() {
+        let mut legacy = RunnerWaveguide::new(0.72, 515.0, -0.38, 48_000.0, true);
+        let mut refined =
+            RunnerWaveguide::new(0.72, 515.0, -0.38, 48_000.0, true).with_refined_dsp(true);
+        // Modulate runner temperature continuously with a high-frequency input pulse train
+        let mut legacy_nyq_diff = 0.0f64;
+        let mut refined_nyq_diff = 0.0f64;
+        let mut prev_l = 0.0f32;
+        let mut prev_r = 0.0f32;
+        for n in 0..8_000 {
+            let temp = 850.0 + 180.0 * (std::f32::consts::TAU * 6.0 * n as f32 / 48_000.0).sin();
+            let exc = if n % 120 == 0 { 1.0 } else { 0.0 };
+            let out_l = legacy.process(exc, temp);
+            let out_r = refined.process(exc, temp);
+            assert!(out_r.is_finite());
+            if n > 1_000 {
+                legacy_nyq_diff += ((out_l - prev_l) as f64).powi(2);
+                refined_nyq_diff += ((out_r - prev_r) as f64).powi(2);
+            }
+            prev_l = out_l;
+            prev_r = out_r;
+        }
+        assert!(refined_nyq_diff < legacy_nyq_diff * 0.75);
+    }
+
+    #[test]
+    fn refined_collector_oversampling_suppresses_hf_intermodulation_and_preserves_dc() {
+        let mut legacy = Collector::new(48_000.0, 0.0);
+        let mut refined = Collector::new(48_000.0, 0.0).with_refined_dsp(true);
+        // Feed a steady DC pulse first to check equilibrium chamber pressure parity
+        let mut dc_l = 0.0f32;
+        let mut dc_r = 0.0f32;
+        for _ in 0..4_000 {
+            dc_l = legacy.process_bank(&[0.2, 0.2, 0.2, 0.2, 0.2]).pressure;
+            dc_r = refined.process_bank(&[0.2, 0.2, 0.2, 0.2, 0.2]).pressure;
+        }
+        assert!((dc_l - dc_r).abs() < 0.02, "DC parity {dc_l} vs {dc_r}");
+
+        // Drive with two hot tones whose folded aliases land at 1.5 kHz (fs - 3*f1) and 2.0 kHz (2*f1 + f2 - fs)
+        let mut leg_clean = Collector::new(48_000.0, 0.0);
+        let mut ref_clean = Collector::new(48_000.0, 0.0).with_refined_dsp(true);
+        let mut leg_c15 = 0.0f64;
+        let mut leg_s15 = 0.0f64;
+        let mut ref_c15 = 0.0f64;
+        let mut ref_s15 = 0.0f64;
+        let mut leg_c20 = 0.0f64;
+        let mut leg_s20 = 0.0f64;
+        let mut ref_c20 = 0.0f64;
+        let mut ref_s20 = 0.0f64;
+        for n in 0..16_000 {
+            let phase1 = TAU * 15_500.0 * n as f32 / 48_000.0;
+            let phase2 = TAU * 19_000.0 * n as f32 / 48_000.0;
+            let drive = 1.6 * phase1.sin() + 1.6 * phase2.sin();
+            let a = leg_clean
+                .process_bank(&[drive, 0.0, 0.0, 0.0, 0.0])
+                .radiated;
+            let b = ref_clean
+                .process_bank(&[drive, 0.0, 0.0, 0.0, 0.0])
+                .radiated;
+            assert!(b.is_finite());
+            if n >= 4_000 {
+                let (s15, c15) = (std::f64::consts::TAU * 1_500.0 * n as f64 / 48_000.0).sin_cos();
+                let (s20, c20) = (std::f64::consts::TAU * 2_000.0 * n as f64 / 48_000.0).sin_cos();
+                leg_c15 += a as f64 * c15;
+                leg_s15 += a as f64 * s15;
+                ref_c15 += b as f64 * c15;
+                ref_s15 += b as f64 * s15;
+                leg_c20 += a as f64 * c20;
+                leg_s20 += a as f64 * s20;
+                ref_c20 += b as f64 * c20;
+                ref_s20 += b as f64 * s20;
+            }
+        }
+        let leg_alias = (leg_c15 * leg_c15 + leg_s15 * leg_s15).sqrt()
+            + (leg_c20 * leg_c20 + leg_s20 * leg_s20).sqrt();
+        let ref_alias = (ref_c15 * ref_c15 + ref_s15 * ref_s15).sqrt()
+            + (ref_c20 * ref_c20 + ref_s20 * ref_s20).sqrt();
+        assert!(
+            ref_alias < leg_alias * 0.15,
+            "4x collector alias mag {ref_alias} not sharply below 1x {leg_alias}"
+        );
     }
 }

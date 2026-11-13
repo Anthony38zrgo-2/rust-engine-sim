@@ -1,6 +1,6 @@
 //! Per-cylinder structural propagation routes and multi-tap airborne delay path.
 
-use crate::dsp::{DcBlocker, ModalBank, OnePoleLowPass};
+use crate::dsp::{DcBlocker, FirstOrderAllPass, ModalBank, OnePoleLowPass, TanhAdaa1};
 
 /// Advances a fixed circular delay buffer by one sample without allocations.
 #[inline]
@@ -22,6 +22,8 @@ pub struct CylinderMechanicalPath {
     delay_cursor: usize,
     dc: DcBlocker,
     radiation_lowpass: OnePoleLowPass,
+    adaa: TanhAdaa1,
+    refined_dsp: bool,
     polarity: f32,
 }
 
@@ -55,6 +57,8 @@ impl CylinderMechanicalPath {
             delay_cursor: 0,
             dc: DcBlocker::new(72.0 + position * 4.0, sample_rate),
             radiation_lowpass: OnePoleLowPass::new(1_350.0 + position * 85.0, sample_rate),
+            adaa: TanhAdaa1::new(4.5, 2.2),
+            refined_dsp: false,
             polarity: if (index + index / bank_split).is_multiple_of(2) {
                 1.0
             } else {
@@ -63,20 +67,47 @@ impl CylinderMechanicalPath {
         }
     }
 
+    /// Enables ADAA1 soft saturation (drive 4.5) and load-modulated modes.
+    pub fn with_refined_dsp(mut self, enabled: bool) -> Self {
+        self.refined_dsp = enabled;
+        self
+    }
+
     /// Propagates cylinder pressure derivative, blowdown, and runner arrival into mechanical output.
     #[inline]
     pub fn process(&mut self, derivative: f32, blowdown: f32, header: f32) -> f32 {
+        self.process_with_load(derivative, blowdown, header, 0.0)
+    }
+
+    /// Propagates cylinder signals using ADAA1 and load-coupled modal drift when enabled.
+    #[inline]
+    pub fn process_with_load(
+        &mut self,
+        derivative: f32,
+        blowdown: f32,
+        header: f32,
+        load: f32,
+    ) -> f32 {
         let excitation = derivative * 0.72 + blowdown * 0.22 + header * 0.16;
         let arrived = advance_delay(
             &mut self.propagation_delay,
             &mut self.delay_cursor,
             excitation,
         );
-        let resonant = self.signature.process(arrived * self.polarity);
+        let resonant = if self.refined_dsp {
+            self.signature
+                .process_modulated(arrived * self.polarity, load, 1.0)
+        } else {
+            self.signature.process(arrived * self.polarity)
+        };
         let radiated = self
             .radiation_lowpass
             .process(self.dc.process(arrived * 0.018 + resonant));
-        (radiated * 10.0).tanh() / 4.0
+        if self.refined_dsp {
+            self.adaa.process(radiated)
+        } else {
+            (radiated * 10.0).tanh() / 4.0
+        }
     }
 }
 
@@ -86,6 +117,9 @@ pub struct AirPath {
     delay: Vec<f32>,
     cursor: usize,
     taps: [(usize, f32); 3],
+    allpass_a: FirstOrderAllPass,
+    allpass_b: FirstOrderAllPass,
+    refined_dsp: bool,
 }
 
 impl AirPath {
@@ -98,7 +132,16 @@ impl AirPath {
             delay: vec![0.0; maximum + 1],
             cursor: 0,
             taps,
+            allpass_a: FirstOrderAllPass::new(0.37, 0.48, sample_rate),
+            allpass_b: FirstOrderAllPass::new(0.61, 0.42, sample_rate),
+            refined_dsp: false,
         }
+    }
+
+    /// Enables short all-pass diffusion after the 3-tap comb sum to smooth HF notches.
+    pub fn with_refined_dsp(mut self, enabled: bool) -> Self {
+        self.refined_dsp = enabled;
+        self
     }
 
     /// Applies the 3-tap airborne reflection sum for one audio sample.
@@ -114,6 +157,10 @@ impl AirPath {
         if self.cursor == self.delay.len() {
             self.cursor = 0;
         }
-        output
+        if self.refined_dsp {
+            self.allpass_b.process(self.allpass_a.process(output))
+        } else {
+            output
+        }
     }
 }

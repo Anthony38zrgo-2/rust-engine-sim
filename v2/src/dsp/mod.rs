@@ -3,15 +3,19 @@
 
 pub mod filters;
 pub mod limiter;
+pub mod nonlinear;
 pub mod resonators;
 pub mod spectrum;
 
 pub use filters::{
-    BandPassNoise, Biquad, DcBlocker, OnePoleLowPass, ThreePoleLowPass, TrackingNotch,
+    BandPassNoise, Biquad, ButterworthLp4, DcBlocker, FirstOrderAllPass, OnePoleLowPass,
+    StateVariableFilter, ThreePoleLowPass, TrackingNotch,
 };
 pub use limiter::{
-    limit_master, MASTER_LIMITER_CEILING, MASTER_LIMITER_HEADROOM, MASTER_LIMITER_KNEE,
+    limit_master, MasterLimiterAdaa1, MASTER_LIMITER_CEILING, MASTER_LIMITER_HEADROOM,
+    MASTER_LIMITER_KNEE,
 };
+pub use nonlinear::{hermite_4pt, smooth_min, TanhAdaa1};
 pub use resonators::{ModalBank, Resonator};
 pub use spectrum::{SpectrumChain, SpectrumChainConfig, UpperMidShelf};
 
@@ -290,5 +294,113 @@ mod tests {
         let (above, red_above) = limit_master(2.0);
         assert!(above > MASTER_LIMITER_KNEE && above <= MASTER_LIMITER_CEILING);
         assert!(red_above < 0.0);
+    }
+
+    #[test]
+    fn smooth_min_is_c1_continuous_across_transition() {
+        let radius = 0.25;
+        assert_eq!(smooth_min(0.1, 1.0, radius), 0.1);
+        assert_eq!(smooth_min(1.0, 0.1, radius), 0.1);
+        let steps = 400;
+        let dx = 2.0 / steps as f32;
+        let mut prev = smooth_min(0.0, 1.0, radius);
+        let mut prev_slope = 0.0f32;
+        for i in 1..=steps {
+            let x = i as f32 * dx;
+            let y = smooth_min(x, 1.0, radius);
+            let slope = (y - prev) / dx;
+            if i > 1 {
+                assert!(
+                    (slope - prev_slope).abs() < 0.05,
+                    "slope jump at x={x}: {prev_slope} -> {slope}"
+                );
+            }
+            prev = y;
+            prev_slope = slope;
+        }
+    }
+
+    #[test]
+    fn tanh_adaa1_preserves_silence_slope_and_suppresses_aliasing() {
+        let mut adaa = TanhAdaa1::new(21.0, 3.15);
+        assert_eq!(adaa.process(0.0), 0.0);
+        assert!(adaa.process(1.0e-7).abs() < 1.0e-5);
+        adaa.reset();
+
+        let sr = 48_000.0f64;
+        let freq = 6_250.0f64;
+        let total = 24_000usize;
+        let skip = 4_000usize;
+        // Monitor folded inharmonic region via DFT at 4_250 Hz (fold of 7 * 6250 Hz = 43_750 -> 4_250 Hz).
+        let alias_hz = 4_250.0f64;
+        let (mut nr, mut ni) = (0.0f64, 0.0f64);
+        let (mut ar, mut ai) = (0.0f64, 0.0f64);
+        for n in 0..total {
+            let x = (std::f64::consts::TAU * freq * n as f64 / sr).sin() as f32 * 0.45;
+            let y_naive = (x * 21.0).tanh() / 3.15;
+            let y_adaa = adaa.process(x);
+            if n >= skip {
+                let phase = std::f64::consts::TAU * alias_hz * n as f64 / sr;
+                nr += y_naive as f64 * phase.cos();
+                ni += y_naive as f64 * phase.sin();
+                ar += y_adaa as f64 * phase.cos();
+                ai += y_adaa as f64 * phase.sin();
+            }
+        }
+        let naive_alias_power = (nr * nr + ni * ni).sqrt();
+        let adaa_alias_power = (ar * ar + ai * ai).sqrt();
+        assert!(
+            adaa_alias_power < naive_alias_power * 0.35,
+            "ADAA1 must strongly attenuate folded aliases (naive={naive_alias_power}, adaa={adaa_alias_power})"
+        );
+    }
+
+    #[test]
+    fn svf_and_allpass_are_stable_and_flat() {
+        let mut svf = StateVariableFilter::new(48_000.0);
+        let pass_db = sine_amplitude_db(|x| svf.process_bandpass(x, 4_000.0, 1.2), 4_000.0);
+        let stop_db = {
+            let mut s = StateVariableFilter::new(48_000.0);
+            sine_amplitude_db(|x| s.process_bandpass(x, 4_000.0, 1.2), 400.0)
+        };
+        assert!(pass_db.abs() < 0.25, "expected ~0 dB peak, got {pass_db}");
+        assert!(stop_db < pass_db - 18.0);
+
+        let mut ap = FirstOrderAllPass::new(0.41, 0.48, 48_000.0);
+        for &hz in &[250.0, 1_800.0, 7_500.0, 14_000.0] {
+            let gain_db = sine_amplitude_db(|x| ap.process(x), hz);
+            assert!(
+                gain_db.abs() < 0.05,
+                "all-pass must stay unity gain at {hz} Hz, got {gain_db}"
+            );
+        }
+    }
+
+    #[test]
+    fn butterworth_lp4_holds_unity_passband_and_steep_2x_stopband() {
+        let os_rate = SAMPLE_RATE * 2.0;
+        let mut lp_pass = ButterworthLp4::new(9_500.0, os_rate);
+        let mut lp_stop = ButterworthLp4::new(9_500.0, os_rate);
+        let measure_db = |lp: &mut ButterworthLp4, freq_hz: f64| {
+            let total = 4_096;
+            let skip = 1_024;
+            let mut sum_sq = 0.0f64;
+            for n in 0..total {
+                let x = (std::f64::consts::TAU * freq_hz * n as f64 / os_rate as f64).sin() as f32;
+                let y = lp.process(x);
+                if n >= skip {
+                    sum_sq += (y as f64) * (y as f64);
+                }
+            }
+            let rms = (sum_sq / (total - skip) as f64).sqrt();
+            20.0 * (rms / std::f64::consts::FRAC_1_SQRT_2).log10()
+        };
+        let pass_db = measure_db(&mut lp_pass, 2_000.0);
+        let stop_db = measure_db(&mut lp_stop, 24_000.0);
+        assert!(pass_db.abs() < 0.1, "expected flat passband, got {pass_db}");
+        assert!(
+            stop_db < -30.0,
+            "expected >= 30 dB rejection at 1x Nyquist (24 kHz), got {stop_db} dB"
+        );
     }
 }

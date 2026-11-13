@@ -89,6 +89,8 @@ pub struct AcousticSceneConfig {
     pub high_rpm_start: f32,
     /// RPM span over which high-RPM weighting ramps from `0.0` to `1.0`.
     pub high_rpm_span: f32,
+    /// Enables ADAA1 waveshaping, modal frequency drift, and airborne all-pass diffusion.
+    pub use_refined_dsp: bool,
 }
 
 impl Default for AcousticSceneConfig {
@@ -111,6 +113,7 @@ impl Default for AcousticSceneConfig {
             structural_profile: EngineStructuralProfile::F1V10,
             high_rpm_start: 8_500.0,
             high_rpm_span: 6_000.0,
+            use_refined_dsp: false,
         }
     }
 }
@@ -127,7 +130,7 @@ impl AcousticSceneConfig {
             mount_monocoque_gain: 0.075,
             transmission_mount_gain: 0.0,
             transmission_cover_gain: 0.0,
-            air_high_tilt_db: -0.5,
+            air_high_tilt_db: 0.0,
             air_direct_gain: 0.0,
             output_gain: 2.95,
             cover_radiation_lowpass_hz: 4_800.0,
@@ -136,6 +139,7 @@ impl AcousticSceneConfig {
             structural_profile: EngineStructuralProfile::CastIronSohcL4,
             high_rpm_start: 3_400.0,
             high_rpm_span: 3_200.0,
+            use_refined_dsp: true,
         }
     }
 

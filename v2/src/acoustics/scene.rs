@@ -52,17 +52,19 @@ impl AcousticScene {
                 sample_rate,
                 config.cover_radiation_lowpass_hz,
                 config.structural_profile,
-            ),
+            )
+            .with_refined_dsp(config.use_refined_dsp),
             mount_monocoque: EngineMountMonocoque::with_profile(
                 sample_rate,
                 config.structural_profile,
             ),
             cylinder_paths: std::array::from_fn(|index| {
                 CylinderMechanicalPath::with_layout(index, sample_rate, config.bank_split)
+                    .with_refined_dsp(config.use_refined_dsp)
             }),
             dry_lowpass: OnePoleLowPass::new(360.0, sample_rate),
             dry_midpass: OnePoleLowPass::new(2_650.0, sample_rate),
-            air_path: AirPath::new(sample_rate),
+            air_path: AirPath::new(sample_rate).with_refined_dsp(config.use_refined_dsp),
             air_tilt: Biquad::high_shelf(
                 AIR_TILT_HZ,
                 std::f32::consts::FRAC_1_SQRT_2,
@@ -99,11 +101,20 @@ impl AcousticScene {
             .iter_mut()
             .enumerate()
         {
-            cylinder_mechanical[index] = path.process(
-                engine.cylinder_pressure_derivative[index],
-                engine.cylinder_blowdown[index],
-                engine.cylinder_headers[index],
-            );
+            cylinder_mechanical[index] = if self.config.use_refined_dsp {
+                path.process_with_load(
+                    engine.cylinder_pressure_derivative[index],
+                    engine.cylinder_blowdown[index],
+                    engine.cylinder_headers[index],
+                    engine.load,
+                )
+            } else {
+                path.process(
+                    engine.cylinder_pressure_derivative[index],
+                    engine.cylinder_blowdown[index],
+                    engine.cylinder_headers[index],
+                )
+            };
         }
         let mech_scale = if self.config.cylinder_count == CYLINDER_COUNT {
             0.34

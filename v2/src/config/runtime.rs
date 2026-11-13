@@ -34,6 +34,8 @@ pub struct TransmissionConfig {
     pub clutch_gain: f32,
     pub shaft_slew_seconds: f32,
     pub seed: u64,
+    /// Enables tooth-mesh phase jitter and contact micro-modulation.
+    pub use_refined_dsp: bool,
 }
 
 impl Default for TransmissionConfig {
@@ -52,6 +54,7 @@ impl Default for TransmissionConfig {
             clutch_gain: 1.0,
             shaft_slew_seconds: 0.12,
             seed: 0x5EED_7A11_5011_5EED,
+            use_refined_dsp: false,
         }
     }
 }
@@ -73,6 +76,7 @@ impl TransmissionConfig {
             clutch_gain: 0.40,
             shaft_slew_seconds: 0.04,
             seed: 0xE5C0_7E45,
+            use_refined_dsp: true,
         }
     }
 
@@ -182,7 +186,11 @@ impl Gf509RuntimeConfig {
             engine_mode: EngineMode::Hybrid,
             sampled_engine_gain: 1.0,
             sampled_gearbox_gain: 1.0,
-            v10_filter: SpectrumChainConfig::default(),
+            v10_filter: SpectrumChainConfig {
+                lowpass_hz: 12_500.0,
+                lowpass_slope_db_per_oct: 12.0,
+                ..SpectrumChainConfig::default()
+            },
             gearbox_filter: SpectrumChainConfig::default(),
         }
     }
